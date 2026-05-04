@@ -1,10 +1,12 @@
 var pluginXhr = null;
 var evalXhr = null;
 
+// Compute the greatest common divisor used for MuseScore duration fractions.
 function getGCD(a, b) {
     return b === 0 ? a : getGCD(b, a % b);
 }
 
+// Extract the selected subject as note/rest events with offsets and ties.
 function extractSubject(cursor) {
     var notes = [];
 
@@ -41,6 +43,7 @@ function extractSubject(cursor) {
     return notes;
 }
 
+// Read the active time signature from the current selection.
 function getSelectionMeterInfo(curScore) {
     var cursor = curScore.newCursor();
     cursor.track = 0;
@@ -57,6 +60,7 @@ function getSelectionMeterInfo(curScore) {
     return { "numerator": 4, "denominator": 4, "measure_ticks": 1920 };
 }
 
+// Map the fugue's top, middle, and bass voices to MuseScore tracks.
 function getVoiceTracks(curScore) {
     return {
         "top": 0,
@@ -65,6 +69,17 @@ function getVoiceTracks(curScore) {
     };
 }
 
+// Build a voice-id-to-track map for score reading and writing.
+function getVoiceTrackMap(curScore) {
+    var tracks = getVoiceTracks(curScore);
+    return {
+        0: tracks.top,
+        1: tracks.middle,
+        2: tracks.bass
+    };
+}
+
+// Return the selected score range that should be generated or evaluated.
 function getSelectionRange(curScore) {
     if (!curScore || !curScore.selection || !curScore.selection.isRange || !curScore.selection.startSegment) {
         return null;
@@ -84,6 +99,7 @@ function getSelectionRange(curScore) {
     };
 }
 
+// Extract one track from the selected range as note/rest payload data.
 function extractSelectionTrack(curScore, trackNum, selectionRange) {
     var notes = [];
     if (!selectionRange) {
@@ -91,11 +107,17 @@ function extractSelectionTrack(curScore, trackNum, selectionRange) {
     }
 
     var cursor = curScore.newCursor();
-    cursor.track = 0;
+    cursor.track = trackNum;
     cursor.rewindToTick(selectionRange.startTick);
 
+    while (cursor.segment && cursor.tick < selectionRange.startTick) {
+        if (!cursor.next()) {
+            return notes;
+        }
+    }
+
     while (cursor.segment && cursor.tick < selectionRange.endTick) {
-        var element = cursor.segment.elementAt(trackNum);
+        var element = cursor.element;
         if (element && element.duration) {
             if (element.notes && element.notes.length > 0) {
                 var noteObj = element.notes[0];
@@ -114,6 +136,12 @@ function extractSelectionTrack(curScore, trackNum, selectionRange) {
     return notes;
 }
 
+// Parse a JSON response from the local Python server.
+function parseJsonResponse(xhr) {
+    return JSON.parse(xhr.responseText);
+}
+
+// Ask the Python server for the next generated solution or alternative.
 function nextMeasure(subjectData, decision, action, selectedIdx, meterInfo, callback) {
     pluginXhr = new XMLHttpRequest();
     pluginXhr.open("POST", "http://127.0.0.1:5000/generate", true);
@@ -123,7 +151,7 @@ function nextMeasure(subjectData, decision, action, selectedIdx, meterInfo, call
         if (pluginXhr.readyState === XMLHttpRequest.DONE) {
             if (pluginXhr.status === 200) {
                 try {
-                    var response = JSON.parse(pluginXhr.responseText);
+                    var response = parseJsonResponse(pluginXhr);
                     if (response.status === "error") {
                         callback(null, null, null, response.message);
                     } else {
@@ -147,6 +175,26 @@ function nextMeasure(subjectData, decision, action, selectedIdx, meterInfo, call
     }));
 }
 
+// Build the three-voice payload sent to the evaluator endpoint.
+function buildEvaluationPayload(curScore, selectionRange) {
+    var trackMap = getVoiceTrackMap(curScore);
+    return {
+        "voice_0": extractSelectionTrack(curScore, trackMap[0], selectionRange),
+        "voice_1": extractSelectionTrack(curScore, trackMap[1], selectionRange),
+        "voice_2": extractSelectionTrack(curScore, trackMap[2], selectionRange)
+    };
+}
+
+// Attach score-relative offsets to issues returned by the evaluator.
+function annotateIssues(issues, selectionRange, meterInfo) {
+    for (var i = 0; i < issues.length; i++) {
+        issues[i].selection_start_tick = selectionRange.startTick;
+        issues[i].measure_ticks = meterInfo.measure_ticks;
+    }
+    return issues;
+}
+
+// Send the selected fugue range to Python for evaluation.
 function evaluateFugue(curScore, selectionRangeOverride, callback) {
     var selectionRange = selectionRangeOverride || getSelectionRange(curScore);
     if (!selectionRange) {
@@ -154,13 +202,7 @@ function evaluateFugue(curScore, selectionRangeOverride, callback) {
         return;
     }
 
-    var tracks = getVoiceTracks(curScore);
-
-    var payload = {
-        "voice_0": extractSelectionTrack(curScore, tracks.top, selectionRange),
-        "voice_1": extractSelectionTrack(curScore, tracks.middle, selectionRange),
-        "voice_2": extractSelectionTrack(curScore, tracks.bass, selectionRange)
-    };
+    var payload = buildEvaluationPayload(curScore, selectionRange);
     var meterInfo = getSelectionMeterInfo(curScore);
     payload.timesig_numerator = meterInfo.numerator;
     payload.timesig_denominator = meterInfo.denominator;
@@ -173,13 +215,15 @@ function evaluateFugue(curScore, selectionRangeOverride, callback) {
     evalXhr.onreadystatechange = function () {
         if (evalXhr.readyState === XMLHttpRequest.DONE) {
             if (evalXhr.status === 200) {
-                var response = JSON.parse(evalXhr.responseText);
-                var issues = response.issues || [];
-                for (var i = 0; i < issues.length; i++) {
-                    issues[i].selection_start_tick = selectionRange.startTick;
-                    issues[i].measure_ticks = meterInfo.measure_ticks;
+                try {
+                    var response = parseJsonResponse(evalXhr);
+                    var issues = annotateIssues(response.issues || [], selectionRange, meterInfo);
+                    var filteredIssues = filterIssuesAgainstScore(curScore, issues);
+                    var filteredMistakes = filteredIssues.length > 0 ? [] : ["No mistakes found!"];
+                    callback(filteredIssues, filteredMistakes, null, selectionRange);
+                } catch (e) {
+                    callback([], ["Failed to parse evaluator response."], "Failed to parse evaluator response.", selectionRange);
                 }
-                callback(issues, response.mistakes || [], null, selectionRange);
             } else {
                 callback([], ["Error: Could not connect to Python server."], "Error: Could not connect to Python server.", selectionRange);
             }
@@ -188,6 +232,7 @@ function evaluateFugue(curScore, selectionRangeOverride, callback) {
     evalXhr.send(JSON.stringify(payload));
 }
 
+// Find the score element that starts at a given tick on a given track.
 function findTrackElementAtTick(curScore, trackNum, tick) {
     var cursor = curScore.newCursor();
     cursor.track = 0;
@@ -206,12 +251,56 @@ function findTrackElementAtTick(curScore, trackNum, tick) {
     return cursor.segment.elementAt(trackNum);
 }
 
+// Check whether a score element is a sounding note/chord rather than a rest.
+function isSoundingElement(element) {
+    return !!(element && element.notes && element.notes.length > 0);
+}
+
+// Drop issues whose named voices are not actually sounding in the score.
+function issueMatchesScoreVoices(curScore, issue) {
+    if (!issue || !issue.voices || issue.voices.length === 0) {
+        return true;
+    }
+
+    var voiceTrackMap = getVoiceTrackMap(curScore);
+    var baseTick = issue.selection_start_tick || 0;
+    var absoluteTick = baseTick + (issue.offset * 120);
+
+    for (var i = 0; i < issue.voices.length; i++) {
+        var voiceId = issue.voices[i];
+        var trackNum = voiceTrackMap[voiceId];
+        if (trackNum === undefined) {
+            return false;
+        }
+
+        var element = findTrackElementAtTick(curScore, trackNum, absoluteTick);
+        if (!isSoundingElement(element)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// Filter evaluator issues against the live MuseScore score contents.
+function filterIssuesAgainstScore(curScore, issues) {
+    var filtered = [];
+    for (var i = 0; i < issues.length; i++) {
+        if (issueMatchesScoreVoices(curScore, issues[i])) {
+            filtered.push(issues[i]);
+        }
+    }
+    return filtered;
+}
+
+// Clear the current score selection used for evaluation highlighting.
 function clearEvaluationSelection(curScore) {
     if (curScore && curScore.selection && curScore.selection.clear) {
         curScore.selection.clear();
     }
 }
 
+// Select the notes associated with the currently focused evaluation issue.
 function focusEvaluationIssue(curScore, issue) {
     if (!curScore || !issue) {
         return false;
@@ -219,12 +308,7 @@ function focusEvaluationIssue(curScore, issue) {
 
     clearEvaluationSelection(curScore);
 
-    var tracks = getVoiceTracks(curScore);
-    var voiceTrackMap = {
-        0: tracks.top,
-        1: tracks.middle,
-        2: tracks.bass
-    };
+    var voiceTrackMap = getVoiceTrackMap(curScore);
     
     var selectedAny = false;
     var refs = issue.note_refs || [];
@@ -262,9 +346,11 @@ function focusEvaluationIssue(curScore, issue) {
     return selectedAny;
 }
 
+// Write a generated three-voice solution back into the MuseScore score.
 function writeNotesToScore(voice0, voice1, voice2, targetScore, pasteTick) {
     targetScore.startCmd();
 
+    // Write one logical voice into its assigned MuseScore track.
     function writeVoiceToTrack(notes, trackNum) {
         if (!notes || notes.length === 0) return;
         
@@ -291,12 +377,11 @@ function writeNotesToScore(voice0, voice1, voice2, targetScore, pasteTick) {
         }
     }
     
-    var middleTrack = (targetScore.nstaves >= 3) ? 4 : 1;
-    var bassTrack = (targetScore.nstaves >= 3) ? 8 : ((targetScore.nstaves === 2) ? 4 : 2);
+    var voiceTrackMap = getVoiceTrackMap(targetScore);
 
     writeVoiceToTrack(voice0, 0);
-    writeVoiceToTrack(voice1, middleTrack);
-    writeVoiceToTrack(voice2, bassTrack);
+    writeVoiceToTrack(voice1, voiceTrackMap[1]);
+    writeVoiceToTrack(voice2, voiceTrackMap[2]);
     
     targetScore.endCmd();
 }

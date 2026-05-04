@@ -15,17 +15,39 @@ ROLE_SOURCE_VOICE = {
     'free_melody': 0,
     'episode_line': 0,
 }
+VOICE_IDS = (0, 1, 2)
+DEFAULT_METER_INFO = {"numerator": 4, "denominator": 4}
+ALL_DURATIONS = [1, 2, 4, 8]
+GEN_ROLE_BY_STATE = {
+    'EXPO_2': 'cs1',
+    'EXPO_3': 'cs2',
+    'EPISODE': 'free_melody',
+    'MIDDLE_ENTRY': 'free_melody',
+}
+ATTEMPT_LIMITS = {
+    'DEFAULT': 72,
+    'EPISODE': 120,
+    'MIDDLE_ENTRY': 160,
+}
+EPISODE_PLAN_TEMPLATES = [
+    {"kind": "sequence", "direction": "down", "step_size": 1, "step_count": 3, "label": "descending_step_1"},
+    {"kind": "sequence", "direction": "down", "step_size": 2, "step_count": 3, "label": "descending_step_2"},
+    {"kind": "sequence", "direction": "up", "step_size": 1, "step_count": 3, "label": "ascending_step_1"},
+    {"kind": "sequence", "direction": "up", "step_size": 2, "step_count": 3, "label": "ascending_step_2"},
+    {"kind": "false_entry", "direction": "down", "step_size": 1, "step_count": 3, "label": "false_entry_down"},
+    {"kind": "false_entry", "direction": "up", "step_size": 1, "step_count": 3, "label": "false_entry_up"},
+]
+
+# --- HELPERS ---
+# Build an empty three-voice stream bundle for runtime state.
 def make_empty_voice_streams():
-    return {0: stream.Stream(), 1: stream.Stream(), 2: stream.Stream()}
+    return {voice_id: stream.Stream() for voice_id in VOICE_IDS}
 
 global_state = {
-    "solver": None,
-    "measure_number": 2,
-    "ans_stream": None,
     "generated_streams": [],
     "last_voice_streams": {},
     "committed_history_streams": make_empty_voice_streams(),
-    "meter_info": {"numerator": 4, "denominator": 4},
+    "meter_info": DEFAULT_METER_INFO.copy(),
 }
 VOICE_RANGES = {
     0: (60, 84),
@@ -38,7 +60,7 @@ VOICE_CENTERS = {
     2: 48,
 }
 
-# --- HELPERS ---
+# Return the last sounding pitch in a stream, or -1 if none exists.
 def get_last_pitch(m21_stream):
     if not m21_stream: return -1
     notes = list(m21_stream.flatten().notesAndRests)
@@ -46,17 +68,16 @@ def get_last_pitch(m21_stream):
         if not n.isRest: return n.pitch.midi
     return -1
 
+# Score a full three-voice candidate using high-level musical heuristics.
 def score_solution(voice_streams, blueprint):
     score = 0
     depth = blueprint.episode_count + blueprint.middle_entry_count
     is_developing_stage = (depth >= 2)
 
     v0_notes = list(voice_streams[0].flatten().notesAndRests) if voice_streams.get(0) else []
-    v1_notes = list(voice_streams[1].flatten().notesAndRests) if voice_streams.get(1) else []
     v2_notes = list(voice_streams[2].flatten().notesAndRests) if voice_streams.get(2) else []
 
-    # --- 1. DEVELOPING METER HEURISTIC ---
-    for v_id, m21_stream in voice_streams.items():
+    for m21_stream in voice_streams.values():
         if not m21_stream: continue
         for n in m21_stream.flatten().notesAndRests:
             if not n.isRest:
@@ -64,7 +85,6 @@ def score_solution(voice_streams, blueprint):
                     if is_developing_stage: score += 15
                     else: score -= 15
 
-    # --- 2. HARMONIC PROGRESSION (Cadences) ---
     if blueprint.current_harmony == 'I':
         if len(v0_notes) > 1:
             for i in range(len(v0_notes) - 1):
@@ -78,7 +98,6 @@ def score_solution(voice_streams, blueprint):
                     if v2_notes[i].pitch.midi % 12 == 7 and v2_notes[i+1].pitch.midi % 12 == 0:  
                         score += 50
 
-    # --- 3. CONTRARY MOTION (Outer Voices) ---
     if len(v0_notes) > 1 and len(v2_notes) > 1:
         limit = min(len(v0_notes), len(v2_notes))
         for i in range(limit - 1):
@@ -88,7 +107,6 @@ def score_solution(voice_streams, blueprint):
                 if (top_int > 0 and bass_int < 0) or (top_int < 0 and bass_int > 0):
                     score += 20
 
-    # --- 4. MELODIC GAP-FILLING ---
     gen_voice_id = 0 if blueprint.state in ['EXPO_3', 'EPISODE'] else 2
     gen_notes = v0_notes if gen_voice_id == 0 else v2_notes
     if len(gen_notes) > 2:
@@ -103,19 +121,28 @@ def score_solution(voice_streams, blueprint):
 
     return score
 
+# Reset the blueprint and all cached generation state.
 def reset_runtime():
     global blueprint
     blueprint = FugueBlueprint()
-    global_state['solver'] = None
     global_state['generated_streams'] = []
     global_state['last_voice_streams'] = {}
     global_state['committed_history_streams'] = make_empty_voice_streams()
-    global_state['meter_info'] = {"numerator": 4, "denominator": 4}
+    global_state['meter_info'] = DEFAULT_METER_INFO.copy()
     global_state.pop('instructions', None)
     global_state.pop('target_gen_role', None)
     global_state.pop('active_voice_id', None)
     global_state.pop('anchor_pitch', None)
 
+# Normalize incoming meter data to a safe numerator/denominator pair.
+def normalize_meter_info(meter_info=None):
+    meter_info = meter_info or {}
+    return {
+        "numerator": max(1, int(meter_info.get('numerator', DEFAULT_METER_INFO['numerator']))),
+        "denominator": max(1, int(meter_info.get('denominator', DEFAULT_METER_INFO['denominator']))),
+    }
+
+# Convert a per-voice issue map into short display summaries.
 def summarize_issues(issue_map):
     summaries = []
     for voice_id in sorted(issue_map):
@@ -123,12 +150,11 @@ def summarize_issues(issue_map):
             summaries.append(f"{VOICE_NAMES[voice_id]}: {'; '.join(issue_map[voice_id][:3])}")
     return summaries
 
+# Read the currently active meter information from runtime state.
 def get_meter_info():
-    meter_info = global_state.get('meter_info') or {}
-    numerator = max(1, int(meter_info.get('numerator', 4)))
-    denominator = max(1, int(meter_info.get('denominator', 4)))
-    return {"numerator": numerator, "denominator": denominator}
+    return normalize_meter_info(global_state.get('meter_info'))
 
+# Strip measure and beat text from an issue string for grouped reporting.
 def strip_issue_location(message):
     for marker in [" at m.", " near m."]:
         index = message.find(marker)
@@ -136,6 +162,7 @@ def strip_issue_location(message):
             return message[:index].rstrip(".")
     return message.rstrip(".")
 
+# Group structured issue events into a compact textual report.
 def format_issue_report(issue_events):
     if not issue_events:
         return ["No mistakes found!"]
@@ -153,6 +180,7 @@ def format_issue_report(issue_events):
         lines.append(f"{location}: {'; '.join(details)}")
     return lines
 
+# Choose a note budget for the next solve based on subject length and rhythm.
 def get_note_budget(state_name):
     subject_stream = blueprint.motives.get('subject')
     if not subject_stream:
@@ -163,6 +191,7 @@ def get_note_budget(state_name):
     total_16ths = max(1, get_stream_length_16ths(subject_stream))
     return max(1, total_16ths // shortest_allowed)
 
+# Extract the distinct note lengths used by the stored subject.
 def get_subject_durations():
     subject_stream = blueprint.motives.get('subject')
     if not subject_stream:
@@ -175,8 +204,8 @@ def get_subject_durations():
     })
     return durations or [2, 4]
 
+# Limit allowed durations for a state based on the subject's rhythm profile.
 def get_allowed_durations(state_name):
-    all_durations = [1, 2, 4, 8]
     subject_durations = get_subject_durations()
     shortest_subject = min(subject_durations) if subject_durations else 2
 
@@ -185,11 +214,13 @@ def get_allowed_durations(state_name):
     else:
         shortest_allowed = shortest_subject
 
-    return [value for value in all_durations if value >= shortest_allowed]
+    return [value for value in ALL_DURATIONS if value >= shortest_allowed]
 
+# Return the sounding MIDI pitches from a stream.
 def get_pitch_list(m21_stream):
     return [n.pitch.midi for n in m21_stream.flatten().notesAndRests if not n.isRest]
 
+# Return the first sounding pitch in a stream, or -1 if none exists.
 def get_first_pitch(m21_stream):
     if not m21_stream:
         return -1
@@ -199,27 +230,24 @@ def get_first_pitch(m21_stream):
             return n.pitch.midi
     return -1
 
-def get_average_pitch(m21_stream):
-    pitches = get_pitch_list(m21_stream)
-    if not pitches:
-        return None
-    return sum(pitches) / float(len(pitches))
-
+# Deep-copy a dictionary of per-voice streams.
 def copy_voice_streams(voice_streams):
     return {
         voice_id: clone_stream(m21_stream)
         for voice_id, m21_stream in voice_streams.items()
     }
 
+# Build a hashable signature for a full three-voice texture.
 def voice_streams_signature(voice_streams):
     return tuple(
         (
             voice_id,
             stream_signature(voice_streams.get(voice_id, stream.Stream())),
         )
-        for voice_id in range(3)
+        for voice_id in VOICE_IDS
     )
 
+# Package a generated stream, rendered voices, and score into one candidate record.
 def build_candidate_entry(generated_stream, voice_streams, score, episode_plan=None):
     return {
         "generated_stream": clone_stream(generated_stream),
@@ -228,9 +256,11 @@ def build_candidate_entry(generated_stream, voice_streams, score, episode_plan=N
         "episode_plan": copy.deepcopy(episode_plan),
     }
 
+# Return a stable signature for one candidate record.
 def candidate_signature(candidate):
     return voice_streams_signature(candidate.get("voice_streams", {}))
 
+# Deep-copy a list of candidate records.
 def copy_candidate_entries(candidates):
     return [
         build_candidate_entry(
@@ -242,17 +272,46 @@ def copy_candidate_entries(candidates):
         for candidate in candidates
     ]
 
+# Snapshot the mutable runtime state before a risky generation step.
+def snapshot_runtime_state():
+    return {
+        'generated_streams': copy_candidate_entries(global_state.get('generated_streams', [])),
+        'last_voice_streams': copy_voice_streams(global_state.get('last_voice_streams', {})),
+        'committed_history_streams': copy_voice_streams(global_state.get('committed_history_streams', {})),
+        'meter_info': normalize_meter_info(global_state.get('meter_info')),
+        'instructions': global_state.get('instructions'),
+        'target_gen_role': global_state.get('target_gen_role'),
+        'active_voice_id': global_state.get('active_voice_id'),
+        'anchor_pitch': global_state.get('anchor_pitch'),
+    }
+
+# Restore a previously saved runtime snapshot after a failed generation step.
+def restore_runtime_state(state_snapshot):
+    global_state['generated_streams'] = copy_candidate_entries(state_snapshot['generated_streams'])
+    global_state['last_voice_streams'] = state_snapshot['last_voice_streams']
+    global_state['committed_history_streams'] = state_snapshot['committed_history_streams']
+    global_state['meter_info'] = state_snapshot['meter_info']
+
+    for key in ['instructions', 'target_gen_role', 'active_voice_id', 'anchor_pitch']:
+        value = state_snapshot.get(key)
+        if value is None:
+            global_state.pop(key, None)
+        else:
+            global_state[key] = value
+
+# Append newly rendered material onto committed voice-history streams.
 def extend_voice_streams(base_voice_streams, new_voice_streams):
-    combined = {}
-    for voice_id in range(3):
-        combined[voice_id] = concatenate_streams([
+    return {
+        voice_id: concatenate_streams([
             base_voice_streams.get(voice_id, stream.Stream()),
             new_voice_streams.get(voice_id, stream.Stream()),
         ])
-    return combined
+        for voice_id in VOICE_IDS
+    }
 
+# Keep only the issues introduced by the candidate beyond existing history.
 def subtract_issue_maps(base_issue_map, combined_issue_map):
-    issue_delta = {0: [], 1: [], 2: []}
+    issue_delta = {voice_id: [] for voice_id in VOICE_IDS}
     for voice_id in issue_delta:
         seen = set(base_issue_map.get(voice_id, []))
         issue_delta[voice_id] = [
@@ -261,6 +320,7 @@ def subtract_issue_maps(base_issue_map, combined_issue_map):
         ]
     return issue_delta
 
+# Evaluate a candidate in full fugue context and return only its new issues.
 def evaluate_candidate_voice_streams(voice_streams, check_weak_dissonances=True):
     history_streams = copy_voice_streams(global_state.get('committed_history_streams', make_empty_voice_streams()))
     base_issues = analyze_voice_streams(
@@ -276,11 +336,12 @@ def evaluate_candidate_voice_streams(voice_streams, check_weak_dissonances=True)
     )
     return subtract_issue_maps(base_issues, combined_issues), combined_streams
 
+# Penalize awkward handoffs between committed history and a new candidate.
 def score_boundary_continuity(history_streams, voice_streams, state_name):
     score = 0.0
     subject_voice = blueprint.last_subject_voice if state_name == 'MIDDLE_ENTRY' else None
 
-    for voice_id in range(3):
+    for voice_id in VOICE_IDS:
         prev_pitch = get_last_pitch(history_streams.get(voice_id))
         curr_pitch = get_first_pitch(voice_streams.get(voice_id))
         if -1 in (prev_pitch, curr_pitch):
@@ -308,6 +369,7 @@ def score_boundary_continuity(history_streams, voice_streams, state_name):
 
     return score
 
+# Find the most recent pitch available for a voice across history and motives.
 def get_previous_voice_pitch(voice_id):
     history_streams = global_state.get('committed_history_streams', {})
     pitch = get_last_pitch(history_streams.get(voice_id))
@@ -324,6 +386,7 @@ def get_previous_voice_pitch(voice_id):
 
     return -1
 
+# Fit a stream into a voice's register while minimizing awkward displacement.
 def fit_stream_to_voice_range(m21_stream, voice_id, reference_pitch=None):
     pitches = get_pitch_list(m21_stream)
     if not pitches:
@@ -358,6 +421,7 @@ def fit_stream_to_voice_range(m21_stream, voice_id, reference_pitch=None):
 
     return clone_stream(m21_stream)
 
+# Build a compact pitch-and-duration signature for one stream.
 def stream_signature(m21_stream):
     return tuple(
         (
@@ -367,6 +431,7 @@ def stream_signature(m21_stream):
         for n in m21_stream.flatten().notesAndRests
     )
 
+# Score a generated line with melodic, registral, and issue-based penalties.
 def score_generated_solution(generated_stream, voice_streams, active_voice_id, prev_pitch, state_name, issue_map=None):
     pitches = get_pitch_list(generated_stream)
     if not pitches:
@@ -441,6 +506,7 @@ def score_generated_solution(generated_stream, voice_streams, active_voice_id, p
 
     return score
 
+# Convert the plugin's JSON note payload into a music21 stream.
 def convert_json_to_stream(json_payload):
     result = stream.Stream()
     subject_data = json_payload.get('subject', [])
@@ -470,6 +536,7 @@ def convert_json_to_stream(json_payload):
         
     return result
 
+# Build a tonal answer by transposing the subject with standard adjustment.
 def create_tonal_answer(m21_stream):
     new_stream = stream.Stream()
     adjustment_active = True
@@ -485,6 +552,7 @@ def create_tonal_answer(m21_stream):
             new_stream.append(note.Note(new_p, quarterLength=n.quarterLength))
     return new_stream
 
+# Move a stream through a diatonic sequence by a given number of steps.
 def diatonic_sequence(m21_stream, steps_down):
     if not m21_stream: return stream.Stream()
     c_major = [0, 2, 4, 5, 7, 9, 11] 
@@ -514,16 +582,11 @@ def diatonic_sequence(m21_stream, steps_down):
             new_stream.append(note.Note(new_p, quarterLength=n.quarterLength))
     return new_stream
 
+# Return fresh copies of the supported episode-plan templates.
 def get_episode_plan_templates():
-    return [
-        {"kind": "sequence", "direction": "down", "step_size": 1, "step_count": 3, "label": "descending_step_1"},
-        {"kind": "sequence", "direction": "down", "step_size": 2, "step_count": 3, "label": "descending_step_2"},
-        {"kind": "sequence", "direction": "up", "step_size": 1, "step_count": 3, "label": "ascending_step_1"},
-        {"kind": "sequence", "direction": "up", "step_size": 2, "step_count": 3, "label": "ascending_step_2"},
-        {"kind": "false_entry", "direction": "down", "step_size": 1, "step_count": 3, "label": "false_entry_down"},
-        {"kind": "false_entry", "direction": "up", "step_size": 1, "step_count": 3, "label": "false_entry_up"},
-    ]
+    return [copy.deepcopy(plan) for plan in EPISODE_PLAN_TEMPLATES]
 
+# Convert an episode plan and step index into a diatonic shift amount.
 def get_episode_step_shift(episode_plan, step_index):
     if not episode_plan or step_index <= 0:
         return 0
@@ -535,6 +598,7 @@ def get_episode_step_shift(episode_plan, step_index):
         shift *= -1
     return shift
 
+# Apply one sequential episode transformation step to a generated stream.
 def apply_episode_step(m21_stream, episode_plan, voice_id, step_index):
     transformed = clone_stream(m21_stream)
     shift = get_episode_step_shift(episode_plan, step_index)
@@ -543,6 +607,7 @@ def apply_episode_step(m21_stream, episode_plan, voice_id, step_index):
         transformed = fit_stream_to_voice_range(transformed, voice_id)
     return transformed
 
+# Extract a short subject-head prefix for false-entry episode plans.
 def extract_subject_head_prefix():
     subject_stream = blueprint.motives.get('subject')
     if not subject_stream:
@@ -583,6 +648,7 @@ def extract_subject_head_prefix():
 
     return prefix
 
+# Build the locked prefix used when solving a false-entry episode.
 def build_episode_locked_prefix(episode_plan, voice_id):
     if not episode_plan or episode_plan.get("kind") != "false_entry":
         return None
@@ -599,6 +665,7 @@ def build_episode_locked_prefix(episode_plan, voice_id):
         reference_pitch=get_previous_voice_pitch(voice_id),
     )
 
+# Gather recent voice pitches used to rank episode-plan direction and range.
 def get_episode_context_pitches(instructions, target_voice_id):
     pitches = []
     for voice_id, role in instructions.items():
@@ -617,6 +684,7 @@ def get_episode_context_pitches(instructions, target_voice_id):
 
     return pitches, target_pitch
 
+# Score one episode plan against the current registral context.
 def score_episode_plan_context(episode_plan, instructions, target_voice_id):
     context_pitches, target_pitch = get_episode_context_pitches(instructions, target_voice_id)
     average_pitch = sum(context_pitches) / float(len(context_pitches))
@@ -670,6 +738,7 @@ def score_episode_plan_context(episode_plan, instructions, target_voice_id):
 
     return score
 
+# Rank supported episode plans from most to least suitable right now.
 def rank_episode_plans(instructions, target_voice_id):
     ranked = []
     for plan in get_episode_plan_templates():
@@ -677,13 +746,40 @@ def rank_episode_plans(instructions, target_voice_id):
     ranked.sort(key=lambda item: item[0])
     return [copy.deepcopy(plan) for _, plan in ranked]
 
-def build_episode_fallback(instructions, target_gen_role, state_name, episode_plan=None):
-    target_voice_id = None
-    for voice_id, role in instructions.items():
-        if role == target_gen_role:
-            target_voice_id = voice_id
-            break
+# Find which voice is assigned the currently generated role.
+def get_target_voice_id(instructions, target_gen_role):
+    return next(
+        (voice_id for voice_id, role in instructions.items() if role == target_gen_role),
+        None,
+    )
 
+# Score a fallback seed after rendering it into full voice streams.
+def score_seed_candidate(seed_stream, instructions, target_gen_role, state_name, target_voice_id, prev_pitch, episode_plan=None):
+    voice_streams = assemble_voice_streams(
+        instructions,
+        target_gen_role,
+        seed_stream,
+        state_name,
+        episode_plan=episode_plan,
+    )
+    issues, _ = evaluate_candidate_voice_streams(voice_streams, check_weak_dissonances=True)
+    score = score_generated_solution(
+        seed_stream,
+        voice_streams,
+        target_voice_id,
+        prev_pitch,
+        state_name,
+        issue_map=issues,
+    )
+
+    if any(issues.values()):
+        score += sum(len(issue_list) for issue_list in issues.values()) * 100
+
+    return score, voice_streams, issues
+
+# Build a non-solver episode candidate when direct solving runs out of options.
+def build_episode_fallback(instructions, target_gen_role, state_name, episode_plan=None):
+    target_voice_id = get_target_voice_id(instructions, target_gen_role)
     if target_voice_id is None:
         return None, None, ["Could not identify the generated episode voice."]
 
@@ -724,26 +820,15 @@ def build_episode_fallback(instructions, target_gen_role, state_name, episode_pl
                 target_voice_id,
                 reference_pitch=prev_pitch,
             )
-            voice_streams = assemble_voice_streams(
+            score, voice_streams, issues = score_seed_candidate(
+                seed_stream,
                 instructions,
                 target_gen_role,
-                seed_stream,
                 state_name,
-                episode_plan=episode_plan,
-            )
-            issues, _ = evaluate_candidate_voice_streams(voice_streams, check_weak_dissonances=True)
-            score = score_generated_solution(
-                seed_stream,
-                voice_streams,
                 target_voice_id,
                 prev_pitch,
-                state_name,
-                issue_map=issues,
+                episode_plan=episode_plan,
             )
-
-            if any(issues.values()):
-                score += sum(len(issue_list) for issue_list in issues.values()) * 100
-
             candidate = (score, seed_stream, voice_streams, issues)
             if best_candidate is None or candidate[0] < best_candidate[0]:
                 best_candidate = candidate
@@ -757,13 +842,9 @@ def build_episode_fallback(instructions, target_gen_role, state_name, episode_pl
 
     return seed_stream, voice_streams, []
 
+# Build a non-solver middle-entry candidate when direct solving fails.
 def build_middle_entry_fallback(instructions, target_gen_role, state_name):
-    target_voice_id = None
-    for voice_id, role in instructions.items():
-        if role == target_gen_role:
-            target_voice_id = voice_id
-            break
-
+    target_voice_id = get_target_voice_id(instructions, target_gen_role)
     if target_voice_id is None:
         return None, None, ["Could not identify the generated middle-entry voice."]
 
@@ -791,20 +872,14 @@ def build_middle_entry_fallback(instructions, target_gen_role, state_name):
                 target_voice_id,
                 reference_pitch=prev_pitch,
             )
-            voice_streams = assemble_voice_streams(instructions, target_gen_role, seed_stream, state_name)
-            issues, _ = evaluate_candidate_voice_streams(voice_streams, check_weak_dissonances=True)
-            score = score_generated_solution(
+            score, voice_streams, issues = score_seed_candidate(
                 seed_stream,
-                voice_streams,
+                instructions,
+                target_gen_role,
+                state_name,
                 target_voice_id,
                 prev_pitch,
-                state_name,
-                issue_map=issues,
             )
-
-            if any(issues.values()):
-                score += sum(len(issue_list) for issue_list in issues.values()) * 100
-
             candidate = (score, seed_stream, voice_streams, issues)
             if best_candidate is None or candidate[0] < best_candidate[0]:
                 best_candidate = candidate
@@ -818,6 +893,7 @@ def build_middle_entry_fallback(instructions, target_gen_role, state_name):
 
     return seed_stream, voice_streams, []
 
+# Resolve a role name into a concrete stream for a specific voice and step.
 def resolve_role_stream(role, voice_id, state_name, sequence_step=0, episode_plan=None):
     base_stream = blueprint.motives.get(role)
     if not base_stream:
@@ -834,18 +910,16 @@ def resolve_role_stream(role, voice_id, state_name, sequence_step=0, episode_pla
 
     return resolved_stream
 
+# Render one generated line plus fixed roles into full voice streams.
 def assemble_voice_streams(instructions, target_gen_role, generated_stream, state_name, episode_plan=None):
     step_count = 3 if state_name == 'EPISODE' else 1
     if state_name == 'EPISODE' and episode_plan:
         step_count = max(2, int(episode_plan.get("step_count", 3)))
-    voice_parts = {0: [], 1: [], 2: []}
+    voice_parts = {voice_id: [] for voice_id in VOICE_IDS}
 
     generated_steps = [generated_stream]
     if state_name == 'EPISODE':
-        target_voice_id = next(
-            (voice_id for voice_id, role in instructions.items() if role == target_gen_role),
-            0,
-        )
+        target_voice_id = get_target_voice_id(instructions, target_gen_role) or 0
         generated_steps = [
             apply_episode_step(generated_stream, episode_plan, target_voice_id, step)
             for step in range(step_count)
@@ -876,6 +950,7 @@ def assemble_voice_streams(instructions, target_gen_role, generated_stream, stat
         for voice_id, parts in voice_parts.items()
     }
 
+# Convert a music21 stream into the JSON payload expected by the plugin bridge.
 def stream_to_payload(m21_stream):
     notes = []
     for n in m21_stream.flatten().notesAndRests:
@@ -884,17 +959,17 @@ def stream_to_payload(m21_stream):
         notes.append({"pitch": pitch, "ticks": ticks})
     return notes
 
+# Prepare solver inputs and anchors for the next generation attempt.
 def prepare_generation_context(instructions, target_gen_role, state_name):
     existing_streams = []
     prev_gen_pitch = -1
     prev_ext_pitches = []
-    active_voice_id = 0
+    active_voice_id = get_target_voice_id(instructions, target_gen_role) or 0
 
     for v_id in sorted(instructions.keys()):
         role = instructions[v_id]
         if role == target_gen_role:
             prev_gen_pitch = get_previous_voice_pitch(v_id)
-            active_voice_id = v_id
         elif role == 'rest':
             prev_ext_pitches.append(-1)
         else:
@@ -904,6 +979,7 @@ def prepare_generation_context(instructions, target_gen_role, state_name):
 
     return existing_streams, prev_ext_pitches, active_voice_id, prev_gen_pitch
 
+# Construct and configure a FugueSolver for one generation attempt.
 def build_solver_for_attempt(existing_streams, active_voice_id, prev_gen_pitch, prev_ext_pitches, state_name, episode_plan=None):
     locked_prefix = None
     note_budget = get_note_budget(state_name)
@@ -927,17 +1003,44 @@ def build_solver_for_attempt(existing_streams, active_voice_id, prev_gen_pitch, 
     solver.setup_rules()
     return solver
 
+# Keep the best-scoring candidates while removing duplicate textures.
+def ordered_unique_candidates(candidates, desired_count):
+    ordered = []
+    ordered_signatures = set()
+    for candidate in sorted(candidates, key=lambda item: item["score"]):
+        signature = candidate_signature(candidate)
+        if signature in ordered_signatures:
+            continue
+        ordered.append(candidate)
+        ordered_signatures.add(signature)
+        if len(ordered) >= desired_count:
+            break
+    return ordered
+
+# Wrap a fallback stream into the same candidate format as solver outputs.
+def build_candidate_from_fallback(fallback_stream, fallback_voices, active_voice_id, prev_pitch, state_name, episode_plan=None, plan_penalty=0.0):
+    fallback_score = score_generated_solution(
+        fallback_stream,
+        fallback_voices,
+        active_voice_id,
+        prev_pitch,
+        state_name,
+    )
+    return build_candidate_entry(
+        fallback_stream,
+        fallback_voices,
+        fallback_score + plan_penalty,
+        episode_plan=episode_plan,
+    )
+
+# Collect valid solver outputs for one state, including fallback recovery.
 def collect_valid_solutions(fs, instructions, target_gen_role, state_name, active_voice_id, prev_pitch, used_signatures=None, max_attempts=None, desired_count=1, episode_plan=None, plan_penalty=0.0):
     last_issues = {}
     check_weak_dissonances = True
     if max_attempts is not None:
         attempt_limit = max_attempts
-    elif state_name == 'MIDDLE_ENTRY':
-        attempt_limit = 160
-    elif state_name == 'EPISODE':
-        attempt_limit = 120
     else:
-        attempt_limit = 72
+        attempt_limit = ATTEMPT_LIMITS.get(state_name, ATTEMPT_LIMITS['DEFAULT'])
     candidate_goal = max(1, desired_count)
     valid_candidates = []
     used_signatures = used_signatures or set()
@@ -986,17 +1089,7 @@ def collect_valid_solutions(fs, instructions, target_gen_role, state_name, activ
         last_issues = issues
 
     if valid_candidates:
-        ordered = []
-        ordered_signatures = set()
-        for candidate in sorted(valid_candidates, key=lambda item: item["score"]):
-            signature = candidate_signature(candidate)
-            if signature in ordered_signatures:
-                continue
-            ordered.append(candidate)
-            ordered_signatures.add(signature)
-            if len(ordered) >= desired_count:
-                break
-        return ordered, []
+        return ordered_unique_candidates(valid_candidates, desired_count), []
 
     if state_name == 'EPISODE':
         if episode_plan and episode_plan.get("kind") == "false_entry":
@@ -1009,19 +1102,15 @@ def collect_valid_solutions(fs, instructions, target_gen_role, state_name, activ
         )
         fallback_signature = voice_streams_signature(fallback_voices) if fallback_voices else None
         if fallback_stream and fallback_voices and fallback_signature not in used_signatures:
-            fallback_score = score_generated_solution(
-                fallback_stream,
-                fallback_voices,
-                active_voice_id,
-                prev_pitch,
-                state_name,
-            )
             return [
-                build_candidate_entry(
+                build_candidate_from_fallback(
                     fallback_stream,
                     fallback_voices,
-                    fallback_score + plan_penalty,
+                    active_voice_id,
+                    prev_pitch,
+                    state_name,
                     episode_plan=episode_plan,
+                    plan_penalty=plan_penalty,
                 )
             ], []
         if fallback_issues:
@@ -1031,19 +1120,13 @@ def collect_valid_solutions(fs, instructions, target_gen_role, state_name, activ
         fallback_stream, fallback_voices, fallback_issues = build_middle_entry_fallback(instructions, target_gen_role, state_name)
         fallback_signature = voice_streams_signature(fallback_voices) if fallback_voices else None
         if fallback_stream and fallback_voices and fallback_signature not in used_signatures:
-            fallback_score = score_generated_solution(
-                fallback_stream,
-                fallback_voices,
-                active_voice_id,
-                prev_pitch,
-                state_name,
-            )
-            return [build_candidate_entry(fallback_stream, fallback_voices, fallback_score)], []
+            return [build_candidate_from_fallback(fallback_stream, fallback_voices, active_voice_id, prev_pitch, state_name)], []
         if fallback_issues:
             return [], fallback_issues
 
     return [], summarize_issues(last_issues)
 
+# Collect and rank candidates for the current state across its plan options.
 def collect_state_candidates(instructions, target_gen_role, state_name, active_voice_id, prev_pitch, existing_streams, prev_ext_pitches, used_signatures=None, desired_count=1):
     used_signatures = used_signatures or set()
     if state_name != 'EPISODE':
@@ -1071,6 +1154,7 @@ def collect_state_candidates(instructions, target_gen_role, state_name, active_v
     ranked_plans = rank_episode_plans(instructions, active_voice_id)
     primary_plan_count = min(4, len(ranked_plans))
 
+    # Extend the candidate pool with solver results from one episode plan.
     def extend_with_plan(plan, plan_index, per_plan_goal):
         nonlocal all_candidates, last_issues, seen_signatures
         solver = build_solver_for_attempt(
@@ -1113,53 +1197,119 @@ def collect_state_candidates(instructions, target_gen_role, state_name, active_v
                 break
 
     if all_candidates:
-        ordered = []
-        ordered_signatures = set()
-        for candidate in sorted(all_candidates, key=lambda item: item["score"]):
-            signature = candidate_signature(candidate)
-            if signature in ordered_signatures:
-                continue
-            ordered.append(candidate)
-            ordered_signatures.add(signature)
-            if len(ordered) >= desired_count:
-                break
-        return ordered, []
+        return ordered_unique_candidates(all_candidates, desired_count), []
 
     return [], last_issues
 
-def find_valid_solution(fs, instructions, target_gen_role, state_name, active_voice_id, prev_pitch, used_signatures=None, max_attempts=None):
-    candidates, issues = collect_valid_solutions(
-        fs,
-        instructions,
-        target_gen_role,
-        state_name,
-        active_voice_id,
-        prev_pitch,
-        used_signatures=used_signatures,
-        max_attempts=max_attempts,
-        desired_count=1,
-    )
-    if candidates:
-        generated_stream = candidates[0]["generated_stream"]
-        voice_streams = candidates[0]["voice_streams"]
-        return generated_stream, voice_streams, []
-    return None, None, issues
-
+# Build the JSON response returned to the MuseScore plugin after generation.
 def build_solution_response(voice_streams):
     multiplier = 3 if blueprint.state == 'EPISODE' else 1
     measure_voices = {
         voice_id: stream_to_payload(voice_streams[voice_id])
-        for voice_id in voice_streams
+        for voice_id in VOICE_IDS
+    }
+    solution = {
+        f"voice_{voice_id}": measure_voices[voice_id]
+        for voice_id in VOICE_IDS
     }
 
     return jsonify({
         "status": "success",
         "next_state": blueprint.state,
         "duration_multiplier": multiplier,
-        "solution": {"voice_0": measure_voices[0], "voice_1": measure_voices[1], "voice_2": measure_voices[2]}
+        "solution": solution,
     })
 
+# Store newly committed material back into the blueprint's motive cache.
+def update_generated_motive(state_name, generated_stream, source_voice_id):
+    if state_name == 'EXPO_2':
+        blueprint.motives['cs1'] = generated_stream
+        blueprint.motive_sources['cs1'] = source_voice_id
+        return
+
+    if state_name == 'EXPO_3':
+        blueprint.motives['cs2'] = generated_stream
+        blueprint.motive_sources['cs2'] = source_voice_id
+        return
+
+    if state_name in ['EPISODE', 'MIDDLE_ENTRY']:
+        blueprint.motives['free_melody'] = generated_stream
+        blueprint.motive_sources['free_melody'] = source_voice_id
+        if state_name == 'EPISODE':
+            blueprint.motives['episode_line'] = generated_stream
+            blueprint.motive_sources['episode_line'] = source_voice_id
+
+# Commit one cached candidate into the fugue history and motive store.
+def commit_candidate_at_index(selected_idx):
+    if len(global_state.get('generated_streams', [])) <= selected_idx:
+        return
+
+    chosen_entry = global_state['generated_streams'][selected_idx]
+    chosen_stream = chosen_entry['generated_stream']
+    committed_voice_streams = chosen_entry['voice_streams']
+    source_voice_id = global_state.get('active_voice_id', 0)
+
+    global_state['last_voice_streams'] = copy_voice_streams(committed_voice_streams)
+    global_state['committed_history_streams'] = extend_voice_streams(
+        global_state.get('committed_history_streams', make_empty_voice_streams()),
+        committed_voice_streams,
+    )
+    update_generated_motive(blueprint.state, chosen_stream, source_voice_id)
+
+# Initialize subject, answer, and committed history from the first user input.
+def initialize_subject(decision, data, meter_payload):
+    blueprint.motives['subject'] = convert_json_to_stream(data)
+    blueprint.motive_sources['subject'] = 1
+    blueprint.motives['answer'] = (
+        create_tonal_answer(blueprint.motives['subject'])
+        if decision == 'tonal_answer'
+        else transpose_stream(blueprint.motives['subject'], -5)
+    )
+    blueprint.motive_sources['answer'] = 2
+    global_state['meter_info'] = normalize_meter_info(meter_payload)
+    global_state['last_voice_streams'] = {
+        0: clone_stream(blueprint.motives['subject']),
+        1: stream.Stream(),
+        2: stream.Stream(),
+    }
+    subject_length = get_stream_length_16ths(blueprint.motives['subject'])
+    global_state['committed_history_streams'] = {
+        0: clone_stream(blueprint.motives['subject']),
+        1: make_rest_stream(subject_length),
+        2: make_rest_stream(subject_length),
+    }
+
+# Cache the current generation instructions and pitch anchor for reuse.
+def store_generation_context(instructions, target_gen_role, active_voice_id, prev_gen_pitch):
+    global_state['instructions'] = instructions
+    global_state['target_gen_role'] = target_gen_role
+    global_state['active_voice_id'] = active_voice_id
+    global_state['anchor_pitch'] = prev_gen_pitch
+
+# Replace or extend the cached candidate pool for Next/Prev navigation.
+def set_candidate_pool(candidates, action):
+    if action == 'new':
+        global_state['generated_streams'] = copy_candidate_entries(candidates)
+    else:
+        global_state['generated_streams'].extend(copy_candidate_entries(candidates))
+
+# Remove candidates whose voice layouts already exist in the cache.
+def unique_new_candidates(candidate_solutions):
+    existing_signatures = {
+        candidate_signature(candidate)
+        for candidate in global_state.get('generated_streams', [])
+    }
+    new_candidates = []
+    for candidate in candidate_solutions:
+        signature = candidate_signature(candidate)
+        if signature in existing_signatures:
+            continue
+        new_candidates.append(candidate)
+        existing_signatures.add(signature)
+    return new_candidates
+
 # --- ENDPOINTS ---
+# Generate the next fugue section or an alternative for the current section.
 @app.route('/generate', methods=['POST'])
 def generate_measure():
     global blueprint
@@ -1185,81 +1335,30 @@ def generate_measure():
     
     if action == 'new':
         if global_state.get('generated_streams'):
-            if len(global_state['generated_streams']) > selected_idx:
-                chosen_entry = global_state['generated_streams'][selected_idx]
-                chosen = chosen_entry['generated_stream']
-                committed_voice_streams = chosen_entry['voice_streams']
-                global_state['last_voice_streams'] = copy_voice_streams(committed_voice_streams)
-                global_state['committed_history_streams'] = extend_voice_streams(
-                    global_state.get('committed_history_streams', make_empty_voice_streams()),
-                    committed_voice_streams,
-                )
-                if blueprint.state == 'EXPO_2':
-                    blueprint.motives['cs1'] = chosen
-                    blueprint.motive_sources['cs1'] = global_state.get('active_voice_id', 0)
-                elif blueprint.state == 'EXPO_3':
-                    blueprint.motives['cs2'] = chosen
-                    blueprint.motive_sources['cs2'] = global_state.get('active_voice_id', 0)
-                elif blueprint.state in ['EPISODE', 'MIDDLE_ENTRY']:
-                    blueprint.motives['free_melody'] = chosen
-                    blueprint.motive_sources['free_melody'] = global_state.get('active_voice_id', 0)
-                    if blueprint.state == 'EPISODE':
-                        blueprint.motives['episode_line'] = chosen
-                        blueprint.motive_sources['episode_line'] = global_state.get('active_voice_id', 0)
+            commit_candidate_at_index(selected_idx)
 
         if blueprint.state == 'INITIAL':
-            blueprint.motives['subject'] = convert_json_to_stream(data)
-            blueprint.motive_sources['subject'] = 1
-            if decision == 'tonal_answer':
-                blueprint.motives['answer'] = create_tonal_answer(blueprint.motives['subject'])
-            else:
-                blueprint.motives['answer'] = transpose_stream(blueprint.motives['subject'], -5)
-            blueprint.motive_sources['answer'] = 2
-            global_state['meter_info'] = {
-                "numerator": max(1, int(meter_payload.get("numerator", 4))),
-                "denominator": max(1, int(meter_payload.get("denominator", 4))),
-            }
-            global_state['last_voice_streams'] = {
-                0: clone_stream(blueprint.motives['subject']),
-                1: stream.Stream(),
-                2: stream.Stream(),
-            }
-            subject_length = get_stream_length_16ths(blueprint.motives['subject'])
-            global_state['committed_history_streams'] = {
-                0: clone_stream(blueprint.motives['subject']),
-                1: make_rest_stream(subject_length),
-                2: make_rest_stream(subject_length),
-            }
+            initialize_subject(decision, data, meter_payload)
 
         blueprint_snapshot = copy.deepcopy(blueprint)
-        state_snapshot = {
-            'solver': global_state.get('solver'),
-            'generated_streams': copy_candidate_entries(global_state.get('generated_streams', [])),
-            'last_voice_streams': copy_voice_streams(global_state.get('last_voice_streams', {})),
-            'committed_history_streams': copy_voice_streams(global_state.get('committed_history_streams', {})),
-            'meter_info': dict(global_state.get('meter_info', {})),
-            'instructions': global_state.get('instructions'),
-            'target_gen_role': global_state.get('target_gen_role'),
-            'active_voice_id': global_state.get('active_voice_id'),
-            'anchor_pitch': global_state.get('anchor_pitch'),
-        }
+        state_snapshot = snapshot_runtime_state()
 
         instructions = blueprint.advance(decision)
         global_state['generated_streams'] = []
-        
-        gen_role_map = {'EXPO_2': 'cs1', 'EXPO_3': 'cs2', 'EPISODE': 'free_melody', 'MIDDLE_ENTRY': 'free_melody'}
-        target_gen_role = gen_role_map.get(blueprint.state, 'free_melody')
+
+        target_gen_role = GEN_ROLE_BY_STATE.get(blueprint.state, 'free_melody')
         _, _, active_voice_id, prev_gen_pitch = prepare_generation_context(
             instructions,
             target_gen_role,
             blueprint.state,
         )
 
-        global_state['solver'] = None
-        global_state['instructions'] = instructions
-        global_state['target_gen_role'] = target_gen_role
-        global_state['active_voice_id'] = active_voice_id
-        global_state['anchor_pitch'] = prev_gen_pitch
+        store_generation_context(
+            instructions,
+            target_gen_role,
+            active_voice_id,
+            prev_gen_pitch,
+        )
 
     instructions = global_state['instructions']
     target_gen_role = global_state['target_gen_role']
@@ -1294,49 +1393,15 @@ def generate_measure():
     if not candidate_solutions:
         if action == 'new' and blueprint_snapshot is not None and state_snapshot is not None:
             blueprint = blueprint_snapshot
-            global_state['solver'] = state_snapshot['solver']
-            global_state['generated_streams'] = copy_candidate_entries(state_snapshot['generated_streams'])
-            global_state['last_voice_streams'] = state_snapshot['last_voice_streams']
-            global_state['committed_history_streams'] = state_snapshot['committed_history_streams']
-            global_state['meter_info'] = state_snapshot['meter_info']
-            if state_snapshot['instructions'] is not None:
-                global_state['instructions'] = state_snapshot['instructions']
-            else:
-                global_state.pop('instructions', None)
-            if state_snapshot['target_gen_role'] is not None:
-                global_state['target_gen_role'] = state_snapshot['target_gen_role']
-            else:
-                global_state.pop('target_gen_role', None)
-            if state_snapshot['active_voice_id'] is not None:
-                global_state['active_voice_id'] = state_snapshot['active_voice_id']
-            else:
-                global_state.pop('active_voice_id', None)
-            if state_snapshot['anchor_pitch'] is not None:
-                global_state['anchor_pitch'] = state_snapshot['anchor_pitch']
-            else:
-                global_state.pop('anchor_pitch', None)
+            restore_runtime_state(state_snapshot)
 
         message = "Z3 exhausted solutions."
         if issue_summary:
             message = f"No valid solution survived the post-checks. Last issues: {' | '.join(issue_summary)}"
         return jsonify({"status": "error", "message": message})
 
-    existing_signatures = {
-        candidate_signature(candidate)
-        for candidate in global_state.get('generated_streams', [])
-    }
-    new_candidates = []
-    for candidate in candidate_solutions:
-        signature = candidate_signature(candidate)
-        if signature in existing_signatures:
-            continue
-        new_candidates.append(candidate)
-        existing_signatures.add(signature)
-
-    if action == 'new':
-        global_state['generated_streams'] = copy_candidate_entries(new_candidates)
-    else:
-        global_state['generated_streams'].extend(copy_candidate_entries(new_candidates))
+    new_candidates = unique_new_candidates(candidate_solutions)
+    set_candidate_pool(new_candidates, action)
 
     ranked_candidates = sorted(
         candidate_solutions,
@@ -1352,13 +1417,13 @@ def generate_measure():
 
     return build_solution_response(voice_streams)
 
+# Evaluate a highlighted fugue excerpt and return structured issues.
 @app.route('/evaluate', methods=['POST'])
 def evaluate_fugue():
     data = request.json
     voice_streams = {
-        0: convert_json_to_stream({'subject': data.get('voice_0', [])}),
-        1: convert_json_to_stream({'subject': data.get('voice_1', [])}),
-        2: convert_json_to_stream({'subject': data.get('voice_2', [])}),
+        voice_id: convert_json_to_stream({'subject': data.get(f'voice_{voice_id}', [])})
+        for voice_id in VOICE_IDS
     }
     meter_info = {
         "numerator": max(1, int(data.get('timesig_numerator', 4) or 4)),

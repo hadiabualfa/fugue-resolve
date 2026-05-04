@@ -16,7 +16,6 @@ MuseScore {
     property var generatedSolutions: []
     property int targetPasteTick: 0
     property int currentSolutionIndex: 0
-    property int nextMeasureToGenerate: 2
     property int subjectDurationTicks: 0
     property string btnState: "ready"
     property string evaluationFeedback: "Highlight a measure and click Evaluate"
@@ -142,35 +141,16 @@ MuseScore {
                     var selectionRange = interactionMode === "evaluate" ? evaluationRange : null;
                     Bridge.evaluateFugue(curScore, selectionRange, function(issues, mistakes, errorMsg, returnedRange) {
                         if (errorMsg) {
-                            interactionMode = "generate";
-                            evaluationIssues = [];
-                            currentIssueIndex = 0;
-                            evaluationRange = null;
-                            Bridge.clearEvaluationSelection(curScore);
-                            evaluationFeedback = errorMsg;
+                            resetEvaluationMode(errorMsg);
                             return;
                         }
 
                         if (issues && issues.length > 0) {
-                            interactionMode = "evaluate";
-                            evaluationIssues = issues;
-                            currentIssueIndex = 0;
-                            evaluationRange = returnedRange;
-                            showCurrentIssue();
+                            enterEvaluationMode(issues, returnedRange);
                         } else if (issues && issues.length === 0) {
-                            interactionMode = "generate";
-                            evaluationIssues = [];
-                            currentIssueIndex = 0;
-                            evaluationRange = returnedRange;
-                            Bridge.clearEvaluationSelection(curScore);
-                            evaluationFeedback = "Perfect! No counterpoint errors detected.";
+                            resetEvaluationMode("Perfect! No counterpoint errors detected.", returnedRange);
                         } else if (mistakes && mistakes.length > 0) {
-                            interactionMode = "generate";
-                            evaluationIssues = [];
-                            currentIssueIndex = 0;
-                            evaluationRange = returnedRange;
-                            evaluationFeedback = mistakes.join("\n");
-                            Bridge.clearEvaluationSelection(curScore);
+                            resetEvaluationMode(mistakes.join("\n"), returnedRange);
                         } else {
                             evaluationFeedback = "Error: Did not receive a response from the solver.";
                         }
@@ -181,18 +161,13 @@ MuseScore {
                 text: "Reset"
                 Layout.minimumWidth: 80
                 onClicked: {
-                    Bridge.clearEvaluationSelection(curScore);
                     Bridge.nextMeasure([], "reset", "new", 0, null, function() {
                         currentSection = "INITIAL";
-                        interactionMode = "generate";
-                        evaluationIssues = [];
-                        currentIssueIndex = 0;
-                        evaluationRange = null;
                         generatedSolutions = [];
                         currentSolutionIndex = 0;
                         targetPasteTick = 0;
                         currentDurationMultiplier = 1;
-                        evaluationFeedback = "Generator reset successfully. Highlight your subject and start again.";
+                        resetEvaluationMode("Generator reset successfully. Highlight your subject and start again.");
                     });
                 }
             }
@@ -215,12 +190,10 @@ MuseScore {
         }
     }
 
+    // Trigger generation for the current fugue section and paste the best result.
     function triggerGeneration(decision) {
         if (btnState === "solving") return; 
-        interactionMode = "generate";
-        evaluationIssues = [];
-        currentIssueIndex = 0;
-        evaluationRange = null;
+        resetEvaluationMode();
         
         var subjectData = [];
         var meterInfo = null;
@@ -237,7 +210,6 @@ MuseScore {
             currentDurationMultiplier = 1; 
         } else {
             targetPasteTick += (subjectDurationTicks * currentDurationMultiplier); 
-            Bridge.clearEvaluationSelection(curScore);
         }
         
         btnState = "solving"; 
@@ -260,6 +232,7 @@ MuseScore {
         });
     }
 
+    // Paste the currently selected generated solution into the score.
     function pasteCurrentSolution() {
         if (generatedSolutions.length > 0) {
             var selectedSolution = generatedSolutions[currentSolutionIndex];
@@ -273,11 +246,10 @@ MuseScore {
         }
     }
 
+    // Highlight and describe the currently selected evaluation issue.
     function showCurrentIssue() {
         if (evaluationIssues.length === 0) {
-            interactionMode = "generate";
-            Bridge.clearEvaluationSelection(curScore);
-            evaluationFeedback = "Perfect! No counterpoint errors detected.";
+            resetEvaluationMode("Perfect! No counterpoint errors detected.", evaluationRange);
             return;
         }
 
@@ -287,5 +259,26 @@ MuseScore {
             "Issue " + (currentIssueIndex + 1) + " of " + evaluationIssues.length + "\n" +
             issue.location + "\n" +
             issue.summary;
+    }
+
+    // Enter evaluation mode with a fresh issue list and selected range.
+    function enterEvaluationMode(issues, range) {
+        interactionMode = "evaluate";
+        evaluationIssues = issues || [];
+        currentIssueIndex = 0;
+        evaluationRange = range || null;
+        showCurrentIssue();
+    }
+
+    // Exit evaluation mode, clear highlights, and optionally show a status message.
+    function resetEvaluationMode(message, range) {
+        interactionMode = "generate";
+        evaluationIssues = [];
+        currentIssueIndex = 0;
+        evaluationRange = range === undefined ? null : range;
+        Bridge.clearEvaluationSelection(curScore);
+        if (message !== undefined) {
+            evaluationFeedback = message;
+        }
     }
 }
