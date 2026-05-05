@@ -43,11 +43,15 @@ function extractSubject(cursor) {
     return notes;
 }
 
-// Read the active time signature from the current selection.
-function getSelectionMeterInfo(curScore) {
+// Read the active time signature at the start of a selected range.
+function getSelectionMeterInfo(curScore, selectionRange) {
     var cursor = curScore.newCursor();
     cursor.track = 0;
-    cursor.rewind(1);
+    if (selectionRange) {
+        cursor.rewindToTick(selectionRange.startTick);
+    } else {
+        cursor.rewind(1);
+    }
 
     if (cursor.measure && cursor.measure.timesigActual) {
         return {
@@ -58,6 +62,29 @@ function getSelectionMeterInfo(curScore) {
     }
 
     return { "numerator": 4, "denominator": 4, "measure_ticks": 1920 };
+}
+
+// Read the active key signature at the selection start in number of accidentals.
+function getSelectionKeyInfo(curScore) {
+    var cursor = curScore.newCursor();
+    cursor.track = 0;
+
+    var selectionRange = getSelectionRange(curScore);
+    if (selectionRange) {
+        cursor.rewindToTick(selectionRange.startTick);
+    } else {
+        cursor.rewind(1);
+    }
+
+    if (cursor && cursor.keySignature !== undefined) {
+        return { "accidentals": cursor.keySignature };
+    }
+
+    if (curScore && curScore.keysig !== undefined) {
+        return { "accidentals": curScore.keysig };
+    }
+
+    return { "accidentals": 0 };
 }
 
 // Map the fugue's top, middle, and bass voices to MuseScore tracks.
@@ -142,7 +169,7 @@ function parseJsonResponse(xhr) {
 }
 
 // Ask the Python server for the next generated solution or alternative.
-function nextMeasure(subjectData, decision, action, selectedIdx, meterInfo, callback) {
+function nextMeasure(subjectData, decision, action, selectedIdx, meterInfo, keyInfo, callback) {
     pluginXhr = new XMLHttpRequest();
     pluginXhr.open("POST", "http://127.0.0.1:5000/generate", true);
     pluginXhr.setRequestHeader("Content-Type", "application/json");
@@ -171,7 +198,8 @@ function nextMeasure(subjectData, decision, action, selectedIdx, meterInfo, call
         "decision": decision,
         "action": action,
         "selected_index": selectedIdx,
-        "meter_info": meterInfo || null
+        "meter_info": meterInfo || null,
+        "key_info": keyInfo || null
     }));
 }
 
@@ -195,15 +223,15 @@ function annotateIssues(issues, selectionRange, meterInfo) {
 }
 
 // Send the selected fugue range to Python for evaluation.
-function evaluateFugue(curScore, selectionRangeOverride, callback) {
-    var selectionRange = selectionRangeOverride || getSelectionRange(curScore);
+function evaluateFugue(curScore, selectionRange, callback) {
+    selectionRange = selectionRange || getSelectionRange(curScore);
     if (!selectionRange) {
         callback([], ["Highlight a range before evaluating."], "Highlight a range before evaluating.");
         return;
     }
 
     var payload = buildEvaluationPayload(curScore, selectionRange);
-    var meterInfo = getSelectionMeterInfo(curScore);
+    var meterInfo = getSelectionMeterInfo(curScore, selectionRange);
     payload.timesig_numerator = meterInfo.numerator;
     payload.timesig_denominator = meterInfo.denominator;
     payload.measure_ticks = meterInfo.measure_ticks;
@@ -291,59 +319,6 @@ function filterIssuesAgainstScore(curScore, issues) {
         }
     }
     return filtered;
-}
-
-// Clear the current score selection used for evaluation highlighting.
-function clearEvaluationSelection(curScore) {
-    if (curScore && curScore.selection && curScore.selection.clear) {
-        curScore.selection.clear();
-    }
-}
-
-// Select the notes associated with the currently focused evaluation issue.
-function focusEvaluationIssue(curScore, issue) {
-    if (!curScore || !issue) {
-        return false;
-    }
-
-    clearEvaluationSelection(curScore);
-
-    var voiceTrackMap = getVoiceTrackMap(curScore);
-    
-    var selectedAny = false;
-    var refs = issue.note_refs || [];
-    var baseTick = issue.selection_start_tick || 0;
-
-    for (var i = 0; i < refs.length; i++) {
-        var ref = refs[i];
-        var trackNum = voiceTrackMap[ref.voice_id];
-        var absoluteTick = baseTick + (ref.start_offset * 120);
-        var element = findTrackElementAtTick(curScore, trackNum, absoluteTick);
-        
-        if (!element) {
-            continue;
-        }
-
-        var selectable = element;
-        if (element.notes && element.notes.length > 0) {
-            selectable = element.notes[0];
-        }
-
-        if (curScore.selection && curScore.selection.select && selectable) {
-            curScore.selection.select(selectable, selectedAny);
-            selectedAny = true;
-        }
-    }
-
-    if (!selectedAny && curScore.selection && curScore.selection.selectRange) {
-        var issueTick = baseTick + (issue.offset * 120);
-        var rangeEnd = issueTick + 120;
-
-        curScore.selection.selectRange(issueTick, rangeEnd, 0, curScore.nstaves);
-        selectedAny = true;
-    }
-
-    return selectedAny;
 }
 
 // Write a generated three-voice solution back into the MuseScore score.

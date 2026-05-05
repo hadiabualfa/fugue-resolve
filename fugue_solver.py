@@ -388,10 +388,14 @@ def analyze_voice_streams(voice_streams, check_weak_dissonances=True, meter_info
 
     return issues
 
+# Return the major-scale pitch classes for a tonic pitch class.
+def _major_scale_pitch_classes(tonic_pc):
+    return [((tonic_pc + step) % 12) for step in (0, 2, 4, 5, 7, 9, 11)]
+
 # Solve one generated fugue line under the current rhythmic and contrapuntal rules.
 class FugueSolver(object):
     # Initialize the Z3 model, note budget, and fixed musical context for one solve.
-    def __init__(self, existing_streams, target_notes=None, prev_gen_pitch=None, prev_ext_pitches=None, strict_invertible=False, voice_id=0, target_chord=None, allowed_durations=None, locked_prefix=None):
+    def __init__(self, existing_streams, target_notes=None, prev_gen_pitch=None, prev_ext_pitches=None, strict_invertible=False, voice_id=0, target_chord=None, allowed_durations=None, locked_prefix=None, tonic_pc=0):
         self.s = Solver()
         self.s.set("timeout", 10000)
         self.existing_streams = existing_streams
@@ -400,6 +404,7 @@ class FugueSolver(object):
         self.strict_invertible = strict_invertible
         self.voice_id = voice_id 
         self.target_chord = target_chord 
+        self.tonic_pc = tonic_pc % 12
         self.allowed_durations = sorted(set(allowed_durations or [1, 2, 4, 8]))
         self.locked_prefix = []
         if locked_prefix:
@@ -594,20 +599,24 @@ class FugueSolver(object):
 
     # Restrict generated pitches to the diatonic white-note collection.
     def apply_diatonic_scale_rule(self):
+        scale_pcs = _major_scale_pitch_classes(self.tonic_pc)
         for i in range(self.max_notes):
             p = self.new_pitches[i]
             pc = p % 12
             is_active = And(self.new_durations[i] > 0, p != -1)
-            is_white_key = Or(pc == 0, pc == 2, pc == 4, pc == 5, pc == 7, pc == 9, pc == 11)
-            self.s.add(Implies(is_active, is_white_key))
+            in_scale = Or(*[pc == scale_pc for scale_pc in scale_pcs])
+            self.s.add(Implies(is_active, in_scale))
 
     # Require the opening harmony to fit the target harmonic area.
     def apply_harmony_rules(self):
         if not self.target_chord: return
         
-        if self.target_chord == 'I': chord_pcs = [0, 4, 7]
-        elif self.target_chord == 'IV': chord_pcs = [0, 5, 9]
-        elif self.target_chord == 'V': chord_pcs = [2, 7, 11]
+        if self.target_chord == 'I':
+            chord_pcs = [self.tonic_pc, (self.tonic_pc + 4) % 12, (self.tonic_pc + 7) % 12]
+        elif self.target_chord == 'IV':
+            chord_pcs = [(self.tonic_pc + 5) % 12, (self.tonic_pc + 9) % 12, self.tonic_pc]
+        elif self.target_chord == 'V':
+            chord_pcs = [(self.tonic_pc + 7) % 12, (self.tonic_pc + 11) % 12, (self.tonic_pc + 2) % 12]
         else: return
         
         for i in range(self.max_notes):

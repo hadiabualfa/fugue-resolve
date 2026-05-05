@@ -17,7 +17,14 @@ ROLE_SOURCE_VOICE = {
 }
 VOICE_IDS = (0, 1, 2)
 DEFAULT_METER_INFO = {"numerator": 4, "denominator": 4}
+DEFAULT_KEY_INFO = {"accidentals": 0}
 ALL_DURATIONS = [1, 2, 4, 8]
+MAJOR_SCALE_STEPS = (0, 2, 4, 5, 7, 9, 11)
+KEYSIG_TO_TONIC_PC = {
+    -7: 11, -6: 6, -5: 1, -4: 8, -3: 3, -2: 10, -1: 5,
+     0: 0,
+     1: 7,  2: 2,  3: 9,  4: 4,  5: 11,  6: 6,  7: 1,
+}
 GEN_ROLE_BY_STATE = {
     'EXPO_2': 'cs1',
     'EXPO_3': 'cs2',
@@ -48,6 +55,8 @@ global_state = {
     "last_voice_streams": {},
     "committed_history_streams": make_empty_voice_streams(),
     "meter_info": DEFAULT_METER_INFO.copy(),
+    "key_info": DEFAULT_KEY_INFO.copy(),
+    "tonic_pc": 0,
 }
 VOICE_RANGES = {
     0: (60, 84),
@@ -68,11 +77,59 @@ def get_last_pitch(m21_stream):
         if not n.isRest: return n.pitch.midi
     return -1
 
+# Normalize incoming key data to a supported key-signature accidentals count.
+def normalize_key_info(key_info=None):
+    key_info = key_info or {}
+    accidentals = int(key_info.get('accidentals', DEFAULT_KEY_INFO['accidentals']))
+    return {"accidentals": max(-7, min(7, accidentals))}
+
+# Infer a tonic pitch class from the first sounding note of the subject.
+def infer_subject_tonic_pc(subject_stream):
+    first_pitch = get_first_pitch(subject_stream)
+    return 0 if first_pitch == -1 else first_pitch % 12
+
+# Read the active tonic pitch class from runtime state.
+def get_tonic_pc():
+    return int(global_state.get('tonic_pc', 0)) % 12
+
+# Return the major-scale pitch classes for the active fugue key.
+def get_scale_pitch_classes(tonic_pc=None):
+    tonic_pc = get_tonic_pc() if tonic_pc is None else (tonic_pc % 12)
+    return tuple((tonic_pc + step) % 12 for step in MAJOR_SCALE_STEPS)
+
+# Return the tonic, subdominant, or dominant triad pitch classes for the active key.
+def get_harmony_pitch_classes(harmony_name, tonic_pc=None):
+    tonic_pc = get_tonic_pc() if tonic_pc is None else (tonic_pc % 12)
+    if harmony_name == 'I':
+        offsets = (0, 4, 7)
+    elif harmony_name == 'IV':
+        offsets = (5, 9, 0)
+    elif harmony_name == 'V':
+        offsets = (7, 11, 2)
+    else:
+        return []
+    return [((tonic_pc + offset) % 12) for offset in offsets]
+
+# Build an ordered ladder of in-key pitches across several octaves.
+def get_scale_pitch_ladder(tonic_pc=None, low=-24, high=151):
+    tonic_pc = get_tonic_pc() if tonic_pc is None else (tonic_pc % 12)
+    ladder = []
+    for octave in range(-2, 13):
+        base = tonic_pc + (12 * octave)
+        for step in MAJOR_SCALE_STEPS:
+            pitch = base + step
+            if low <= pitch <= high:
+                ladder.append(pitch)
+    return sorted(set(ladder))
+
 # Score a full three-voice candidate using high-level musical heuristics.
 def score_solution(voice_streams, blueprint):
     score = 0
     depth = blueprint.episode_count + blueprint.middle_entry_count
     is_developing_stage = (depth >= 2)
+    tonic_pc = get_tonic_pc()
+    leading_pc = (tonic_pc + 11) % 12
+    dominant_pc = (tonic_pc + 7) % 12
 
     v0_notes = list(voice_streams[0].flatten().notesAndRests) if voice_streams.get(0) else []
     v2_notes = list(voice_streams[2].flatten().notesAndRests) if voice_streams.get(2) else []
@@ -89,13 +146,13 @@ def score_solution(voice_streams, blueprint):
         if len(v0_notes) > 1:
             for i in range(len(v0_notes) - 1):
                 if not v0_notes[i].isRest and not v0_notes[i+1].isRest:
-                    if v0_notes[i].pitch.midi % 12 == 11 and v0_notes[i+1].pitch.midi % 12 == 0: 
+                    if v0_notes[i].pitch.midi % 12 == leading_pc and v0_notes[i+1].pitch.midi % 12 == tonic_pc:
                         score += 50
 
         if len(v2_notes) > 1:
             for i in range(len(v2_notes) - 1):
                 if not v2_notes[i].isRest and not v2_notes[i+1].isRest:
-                    if v2_notes[i].pitch.midi % 12 == 7 and v2_notes[i+1].pitch.midi % 12 == 0:  
+                    if v2_notes[i].pitch.midi % 12 == dominant_pc and v2_notes[i+1].pitch.midi % 12 == tonic_pc:
                         score += 50
 
     if len(v0_notes) > 1 and len(v2_notes) > 1:
@@ -129,6 +186,8 @@ def reset_runtime():
     global_state['last_voice_streams'] = {}
     global_state['committed_history_streams'] = make_empty_voice_streams()
     global_state['meter_info'] = DEFAULT_METER_INFO.copy()
+    global_state['key_info'] = DEFAULT_KEY_INFO.copy()
+    global_state['tonic_pc'] = 0
     global_state.pop('instructions', None)
     global_state.pop('target_gen_role', None)
     global_state.pop('active_voice_id', None)
@@ -279,6 +338,8 @@ def snapshot_runtime_state():
         'last_voice_streams': copy_voice_streams(global_state.get('last_voice_streams', {})),
         'committed_history_streams': copy_voice_streams(global_state.get('committed_history_streams', {})),
         'meter_info': normalize_meter_info(global_state.get('meter_info')),
+        'key_info': normalize_key_info(global_state.get('key_info')),
+        'tonic_pc': get_tonic_pc(),
         'instructions': global_state.get('instructions'),
         'target_gen_role': global_state.get('target_gen_role'),
         'active_voice_id': global_state.get('active_voice_id'),
@@ -291,6 +352,8 @@ def restore_runtime_state(state_snapshot):
     global_state['last_voice_streams'] = state_snapshot['last_voice_streams']
     global_state['committed_history_streams'] = state_snapshot['committed_history_streams']
     global_state['meter_info'] = state_snapshot['meter_info']
+    global_state['key_info'] = state_snapshot.get('key_info', DEFAULT_KEY_INFO.copy())
+    global_state['tonic_pc'] = state_snapshot.get('tonic_pc', 0)
 
     for key in ['instructions', 'target_gen_role', 'active_voice_id', 'anchor_pitch']:
         value = state_snapshot.get(key)
@@ -386,6 +449,23 @@ def get_previous_voice_pitch(voice_id):
 
     return -1
 
+# Expand a stream into a per-16th pitch grid for local registral checks.
+def stream_to_pitch_grid(m21_stream, total_16ths):
+    grid = [-1] * total_16ths
+    if not m21_stream:
+        return grid
+
+    offset = 0
+    for n in m21_stream.flatten().notesAndRests:
+        dur_16ths = int(n.quarterLength / 0.25)
+        pitch = -1 if n.isRest else n.pitch.midi
+        if pitch != -1:
+            for tick in range(offset, min(offset + dur_16ths, total_16ths)):
+                grid[tick] = pitch
+        offset += dur_16ths
+
+    return grid
+
 # Fit a stream into a voice's register while minimizing awkward displacement.
 def fit_stream_to_voice_range(m21_stream, voice_id, reference_pitch=None):
     pitches = get_pitch_list(m21_stream)
@@ -420,6 +500,104 @@ def fit_stream_to_voice_range(m21_stream, voice_id, reference_pitch=None):
         return min(candidates, key=lambda item: item[0])[1]
 
     return clone_stream(m21_stream)
+
+# Penalize simultaneous crossings between an upper and lower stream.
+def stream_crossing_penalty(upper_stream, lower_stream):
+    total_16ths = max(
+        get_stream_length_16ths(upper_stream),
+        get_stream_length_16ths(lower_stream),
+    )
+    if total_16ths <= 0:
+        return 0
+
+    upper_grid = stream_to_pitch_grid(upper_stream, total_16ths)
+    lower_grid = stream_to_pitch_grid(lower_stream, total_16ths)
+    penalty = 0
+    for upper_pitch, lower_pitch in zip(upper_grid, lower_grid):
+        if -1 in (upper_pitch, lower_pitch):
+            continue
+        if upper_pitch <= lower_pitch:
+            penalty += 200 + ((lower_pitch - upper_pitch) * 12)
+    return penalty
+
+# Refit one stream relative to a neighbor so their registral order is preserved.
+def fit_stream_relative_to_neighbor(m21_stream, voice_id, neighbor_stream, should_be_above, reference_pitch=None):
+    pitches = get_pitch_list(m21_stream)
+    if not pitches:
+        return clone_stream(m21_stream)
+
+    low, high = VOICE_RANGES[voice_id]
+    center = VOICE_CENTERS[voice_id]
+    best_candidate = None
+
+    for octave_shift in range(-2, 3):
+        shifted_stream = transpose_stream(m21_stream, octave_shift * 12)
+        shifted_pitches = get_pitch_list(shifted_stream)
+        if not shifted_pitches:
+            continue
+        if min(shifted_pitches) < low or max(shifted_pitches) > high:
+            continue
+
+        score = sum(abs(pitch - center) for pitch in shifted_pitches)
+        if reference_pitch not in (-1, None):
+            score += abs(shifted_pitches[0] - reference_pitch) * 2
+
+        if should_be_above:
+            score += stream_crossing_penalty(shifted_stream, neighbor_stream)
+        else:
+            score += stream_crossing_penalty(neighbor_stream, shifted_stream)
+
+        candidate = (score, shifted_stream)
+        if best_candidate is None or candidate[0] < best_candidate[0]:
+            best_candidate = candidate
+
+    if best_candidate:
+        return best_candidate[1]
+
+    return fit_stream_to_voice_range(m21_stream, voice_id, reference_pitch=reference_pitch)
+
+# Adjust fixed voice streams to reduce built-in crossings before solving or scoring.
+def stabilize_voice_stream_order(voice_streams, protected_voice_ids=None):
+    protected_voice_ids = set(protected_voice_ids or [])
+    stabilized = copy_voice_streams(voice_streams)
+
+    if 0 in stabilized and 1 in stabilized:
+        if 0 in protected_voice_ids and 1 not in protected_voice_ids:
+            stabilized[1] = fit_stream_relative_to_neighbor(
+                stabilized[1],
+                1,
+                stabilized[0],
+                should_be_above=False,
+                reference_pitch=get_previous_voice_pitch(1),
+            )
+        else:
+            stabilized[0] = fit_stream_relative_to_neighbor(
+                stabilized[0],
+                0,
+                stabilized[1],
+                should_be_above=True,
+                reference_pitch=get_previous_voice_pitch(0),
+            )
+
+    if 1 in stabilized and 2 in stabilized:
+        if 2 in protected_voice_ids and 1 not in protected_voice_ids:
+            stabilized[1] = fit_stream_relative_to_neighbor(
+                stabilized[1],
+                1,
+                stabilized[2],
+                should_be_above=True,
+                reference_pitch=get_previous_voice_pitch(1),
+            )
+        else:
+            stabilized[2] = fit_stream_relative_to_neighbor(
+                stabilized[2],
+                2,
+                stabilized[1],
+                should_be_above=False,
+                reference_pitch=get_previous_voice_pitch(2),
+            )
+
+    return stabilized
 
 # Build a compact pitch-and-duration signature for one stream.
 def stream_signature(m21_stream):
@@ -540,13 +718,14 @@ def convert_json_to_stream(json_payload):
 def create_tonal_answer(m21_stream):
     new_stream = stream.Stream()
     adjustment_active = True
+    dominant_pc = (get_tonic_pc() + 7) % 12
     for n in m21_stream.flatten().notesAndRests:
         if n.isRest:
             new_stream.append(note.Rest(quarterLength=n.quarterLength))
         else:
             p = n.pitch.midi
             new_p = p - 5 
-            if adjustment_active and p % 12 == 7:
+            if adjustment_active and p % 12 == dominant_pc:
                 new_p = p - 7 
                 adjustment_active = False 
             new_stream.append(note.Note(new_p, quarterLength=n.quarterLength))
@@ -555,30 +734,18 @@ def create_tonal_answer(m21_stream):
 # Move a stream through a diatonic sequence by a given number of steps.
 def diatonic_sequence(m21_stream, steps_down):
     if not m21_stream: return stream.Stream()
-    c_major = [0, 2, 4, 5, 7, 9, 11] 
+    scale_ladder = get_scale_pitch_ladder()
     new_stream = stream.Stream()
     for n in m21_stream.flatten().notesAndRests:
         if n.isRest:
             new_stream.append(note.Rest(quarterLength=n.quarterLength))
         else:
             p = n.pitch.midi
-            pc = p % 12
-            octave = (p // 12) * 12
-            if pc in c_major:
-                idx = c_major.index(pc)
+            if p in scale_ladder:
+                idx = scale_ladder.index(p)
             else:
-                idx = min(range(len(c_major)), key=lambda i: abs(c_major[i] - pc))
-                
-            new_idx = idx - steps_down
-            octave_shift = 0
-            while new_idx < 0:
-                new_idx += 7
-                octave_shift -= 12
-            while new_idx >= 7:
-                new_idx -= 7
-                octave_shift += 12
-                
-            new_p = c_major[new_idx] + octave + octave_shift
+                idx = min(range(len(scale_ladder)), key=lambda i: abs(scale_ladder[i] - p))
+            new_p = scale_ladder[max(0, min(len(scale_ladder) - 1, idx - steps_down))]
             new_stream.append(note.Note(new_p, quarterLength=n.quarterLength))
     return new_stream
 
@@ -916,10 +1083,10 @@ def assemble_voice_streams(instructions, target_gen_role, generated_stream, stat
     if state_name == 'EPISODE' and episode_plan:
         step_count = max(2, int(episode_plan.get("step_count", 3)))
     voice_parts = {voice_id: [] for voice_id in VOICE_IDS}
+    target_voice_id = get_target_voice_id(instructions, target_gen_role) or 0
 
     generated_steps = [generated_stream]
     if state_name == 'EPISODE':
-        target_voice_id = get_target_voice_id(instructions, target_gen_role) or 0
         generated_steps = [
             apply_episode_step(generated_stream, episode_plan, target_voice_id, step)
             for step in range(step_count)
@@ -928,14 +1095,15 @@ def assemble_voice_streams(instructions, target_gen_role, generated_stream, stat
     for step_index in range(step_count):
         step_stream = generated_steps[step_index]
         step_length = get_stream_length_16ths(step_stream)
+        step_voice_streams = {}
 
         for voice_id, role in instructions.items():
             if role == target_gen_role:
-                current_stream = step_stream
+                step_voice_streams[voice_id] = step_stream
             elif role == 'rest':
-                current_stream = make_rest_stream(step_length)
+                step_voice_streams[voice_id] = make_rest_stream(step_length)
             else:
-                current_stream = resolve_role_stream(
+                step_voice_streams[voice_id] = resolve_role_stream(
                     role,
                     voice_id,
                     state_name,
@@ -943,6 +1111,11 @@ def assemble_voice_streams(instructions, target_gen_role, generated_stream, stat
                     episode_plan=episode_plan,
                 )
 
+        step_voice_streams = stabilize_voice_stream_order(
+            step_voice_streams,
+            protected_voice_ids={target_voice_id},
+        )
+        for voice_id, current_stream in step_voice_streams.items():
             voice_parts[voice_id].append(current_stream)
 
     return {
@@ -961,21 +1134,30 @@ def stream_to_payload(m21_stream):
 
 # Prepare solver inputs and anchors for the next generation attempt.
 def prepare_generation_context(instructions, target_gen_role, state_name):
-    existing_streams = []
+    existing_voice_streams = {}
     prev_gen_pitch = -1
-    prev_ext_pitches = []
     active_voice_id = get_target_voice_id(instructions, target_gen_role) or 0
 
     for v_id in sorted(instructions.keys()):
         role = instructions[v_id]
         if role == target_gen_role:
             prev_gen_pitch = get_previous_voice_pitch(v_id)
-        elif role == 'rest':
+        elif role != 'rest':
+            existing_voice_streams[v_id] = resolve_role_stream(role, v_id, state_name)
+
+    existing_voice_streams = stabilize_voice_stream_order(existing_voice_streams)
+    existing_streams = []
+    prev_ext_pitches = []
+    for v_id in sorted(instructions.keys()):
+        role = instructions[v_id]
+        if role == target_gen_role:
+            continue
+        if role == 'rest':
             prev_ext_pitches.append(-1)
-        else:
-            role_stream = resolve_role_stream(role, v_id, state_name)
-            existing_streams.append(role_stream)
-            prev_ext_pitches.append(get_last_pitch(role_stream))
+            continue
+        role_stream = existing_voice_streams[v_id]
+        existing_streams.append(role_stream)
+        prev_ext_pitches.append(get_last_pitch(role_stream))
 
     return existing_streams, prev_ext_pitches, active_voice_id, prev_gen_pitch
 
@@ -999,6 +1181,7 @@ def build_solver_for_attempt(existing_streams, active_voice_id, prev_gen_pitch, 
         target_chord=blueprint.current_harmony,
         allowed_durations=get_allowed_durations(state_name),
         locked_prefix=locked_prefix,
+        tonic_pc=get_tonic_pc(),
     )
     solver.setup_rules()
     return solver
@@ -1257,9 +1440,15 @@ def commit_candidate_at_index(selected_idx):
     update_generated_motive(blueprint.state, chosen_stream, source_voice_id)
 
 # Initialize subject, answer, and committed history from the first user input.
-def initialize_subject(decision, data, meter_payload):
+def initialize_subject(decision, data, meter_payload, key_payload):
     blueprint.motives['subject'] = convert_json_to_stream(data)
     blueprint.motive_sources['subject'] = 1
+    normalized_key = normalize_key_info(key_payload)
+    global_state['key_info'] = normalized_key
+    global_state['tonic_pc'] = KEYSIG_TO_TONIC_PC.get(
+        normalized_key['accidentals'],
+        infer_subject_tonic_pc(blueprint.motives['subject']),
+    )
     blueprint.motives['answer'] = (
         create_tonal_answer(blueprint.motives['subject'])
         if decision == 'tonal_answer'
@@ -1319,6 +1508,7 @@ def generate_measure():
     decision = data.get('decision', 'auto')
     selected_idx = int(data.get('selected_index', 0) or 0)
     meter_payload = data.get('meter_info') or {}
+    key_payload = data.get('key_info') or {}
     blueprint_snapshot = None
     state_snapshot = None
     active_voice_id = global_state.get('active_voice_id', 0)
@@ -1338,7 +1528,7 @@ def generate_measure():
             commit_candidate_at_index(selected_idx)
 
         if blueprint.state == 'INITIAL':
-            initialize_subject(decision, data, meter_payload)
+            initialize_subject(decision, data, meter_payload, key_payload)
 
         blueprint_snapshot = copy.deepcopy(blueprint)
         state_snapshot = snapshot_runtime_state()

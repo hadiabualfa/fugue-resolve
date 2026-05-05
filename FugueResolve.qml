@@ -112,7 +112,7 @@ MuseScore {
                     if (generatedSolutions.length === 0) return;
                     if (currentSolutionIndex >= generatedSolutions.length - 1) {
                         nextSolBtn.text = "..."
-                        Bridge.nextMeasure([], "auto", "next", currentSolutionIndex, null, function(solution, nextState, durationMultiplier, errorMsg) {
+                        Bridge.nextMeasure([], "auto", "next", currentSolutionIndex, null, null, function(solution, nextState, durationMultiplier, errorMsg) {
                             if (solution) {
                                 var temp = generatedSolutions.slice();
                                 temp.push(solution);
@@ -138,7 +138,14 @@ MuseScore {
                 Layout.fillWidth: true
                 onClicked: {
                     evaluationFeedback = "Evaluating...";
-                    var selectionRange = interactionMode === "evaluate" ? evaluationRange : null;
+                    var selectionRange = interactionMode === "evaluate"
+                        ? evaluationRange
+                        : Bridge.getSelectionRange(curScore);
+                    if (!selectionRange) {
+                        evaluationFeedback = "Highlight a range before evaluating.";
+                        return;
+                    }
+
                     Bridge.evaluateFugue(curScore, selectionRange, function(issues, mistakes, errorMsg, returnedRange) {
                         if (errorMsg) {
                             resetEvaluationMode(errorMsg);
@@ -161,7 +168,7 @@ MuseScore {
                 text: "Reset"
                 Layout.minimumWidth: 80
                 onClicked: {
-                    Bridge.nextMeasure([], "reset", "new", 0, null, function() {
+                    Bridge.nextMeasure([], "reset", "new", 0, null, null, function() {
                         currentSection = "INITIAL";
                         generatedSolutions = [];
                         currentSolutionIndex = 0;
@@ -197,6 +204,7 @@ MuseScore {
         
         var subjectData = [];
         var meterInfo = null;
+        var keyInfo = null;
         var oldPasteTick = targetPasteTick;
         
         if (currentSection === "INITIAL") {
@@ -207,6 +215,7 @@ MuseScore {
             subjectDurationTicks = targetPasteTick - cursor.tick;
             subjectData = Bridge.extractSubject(cursor);
             meterInfo = Bridge.getSelectionMeterInfo(curScore);
+            keyInfo = Bridge.getSelectionKeyInfo(curScore);
             currentDurationMultiplier = 1; 
         } else {
             targetPasteTick += (subjectDurationTicks * currentDurationMultiplier); 
@@ -215,7 +224,7 @@ MuseScore {
         btnState = "solving"; 
         evaluationFeedback = "Generating...";
         
-        Bridge.nextMeasure(subjectData, decision, "new", currentSolutionIndex, meterInfo, function(solution, nextState, durationMultiplier, errorMsg) {
+        Bridge.nextMeasure(subjectData, decision, "new", currentSolutionIndex, meterInfo, keyInfo, function(solution, nextState, durationMultiplier, errorMsg) {
             if (!solution) {
                 targetPasteTick = oldPasteTick;
                 evaluationFeedback = errorMsg ? "Error: " + errorMsg : "Error: Generation failed.";
@@ -246,7 +255,7 @@ MuseScore {
         }
     }
 
-    // Highlight and describe the currently selected evaluation issue.
+    // Describe the currently selected evaluation issue.
     function showCurrentIssue() {
         if (evaluationIssues.length === 0) {
             resetEvaluationMode("Perfect! No counterpoint errors detected.", evaluationRange);
@@ -254,7 +263,6 @@ MuseScore {
         }
 
         var issue = evaluationIssues[currentIssueIndex];
-        Bridge.focusEvaluationIssue(curScore, issue);
         evaluationFeedback =
             "Issue " + (currentIssueIndex + 1) + " of " + evaluationIssues.length + "\n" +
             issue.location + "\n" +
@@ -270,13 +278,12 @@ MuseScore {
         showCurrentIssue();
     }
 
-    // Exit evaluation mode, clear highlights, and optionally show a status message.
+    // Exit evaluation mode and optionally show a status message.
     function resetEvaluationMode(message, range) {
         interactionMode = "generate";
         evaluationIssues = [];
         currentIssueIndex = 0;
         evaluationRange = range === undefined ? null : range;
-        Bridge.clearEvaluationSelection(curScore);
         if (message !== undefined) {
             evaluationFeedback = message;
         }
