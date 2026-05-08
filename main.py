@@ -37,12 +37,14 @@ ATTEMPT_LIMITS = {
     'MIDDLE_ENTRY': 160,
 }
 EPISODE_PLAN_TEMPLATES = [
-    {"kind": "sequence", "direction": "down", "step_size": 1, "step_count": 3, "label": "descending_step_1"},
-    {"kind": "sequence", "direction": "down", "step_size": 2, "step_count": 3, "label": "descending_step_2"},
-    {"kind": "sequence", "direction": "up", "step_size": 1, "step_count": 3, "label": "ascending_step_1"},
-    {"kind": "sequence", "direction": "up", "step_size": 2, "step_count": 3, "label": "ascending_step_2"},
-    {"kind": "false_entry", "direction": "down", "step_size": 1, "step_count": 3, "label": "false_entry_down"},
-    {"kind": "false_entry", "direction": "up", "step_size": 1, "step_count": 3, "label": "false_entry_up"},
+    {"kind": "sequence", "direction": "down", "support_direction": "down", "generated_direction": "down", "step_size": 1, "step_count": 3, "label": "descending_step_1"},
+    {"kind": "sequence", "direction": "down", "support_direction": "down", "generated_direction": "down", "step_size": 2, "step_count": 3, "label": "descending_step_2"},
+    {"kind": "sequence", "direction": "up", "support_direction": "up", "generated_direction": "up", "step_size": 1, "step_count": 3, "label": "ascending_step_1"},
+    {"kind": "sequence", "direction": "up", "support_direction": "up", "generated_direction": "up", "step_size": 2, "step_count": 3, "label": "ascending_step_2"},
+    {"kind": "sequence", "direction": "down", "support_direction": "down", "generated_direction": "up", "step_size": 1, "step_count": 3, "label": "contrary_support_down_step_1"},
+    {"kind": "sequence", "direction": "up", "support_direction": "up", "generated_direction": "down", "step_size": 1, "step_count": 3, "label": "contrary_support_up_step_1"},
+    {"kind": "false_entry", "direction": "down", "support_direction": "down", "generated_direction": "down", "step_size": 1, "step_count": 3, "label": "false_entry_down"},
+    {"kind": "false_entry", "direction": "up", "support_direction": "up", "generated_direction": "up", "step_size": 1, "step_count": 3, "label": "false_entry_up"},
 ]
 
 # --- HELPERS ---
@@ -54,6 +56,7 @@ global_state = {
     "generated_streams": [],
     "last_voice_streams": {},
     "committed_history_streams": make_empty_voice_streams(),
+    "section_history": [],
     "meter_info": DEFAULT_METER_INFO.copy(),
     "key_info": DEFAULT_KEY_INFO.copy(),
     "tonic_pc": 0,
@@ -185,6 +188,7 @@ def reset_runtime():
     global_state['generated_streams'] = []
     global_state['last_voice_streams'] = {}
     global_state['committed_history_streams'] = make_empty_voice_streams()
+    global_state['section_history'] = []
     global_state['meter_info'] = DEFAULT_METER_INFO.copy()
     global_state['key_info'] = DEFAULT_KEY_INFO.copy()
     global_state['tonic_pc'] = 0
@@ -208,6 +212,13 @@ def summarize_issues(issue_map):
         if issue_map[voice_id]:
             summaries.append(f"{VOICE_NAMES[voice_id]}: {'; '.join(issue_map[voice_id][:3])}")
     return summaries
+
+# Format a generation failure message as a short bulleted block for the plugin UI.
+def format_generation_message(title, details=None):
+    details = details or []
+    if not details:
+        return title
+    return "\n".join([title] + [f"- {detail}" for detail in details])
 
 # Read the currently active meter information from runtime state.
 def get_meter_info():
@@ -263,6 +274,10 @@ def get_subject_durations():
     })
     return durations or [2, 4]
 
+# Detect whether the current subject mixes multiple rhythmic values.
+def subject_has_mixed_rhythm():
+    return len(get_subject_durations()) > 1
+
 # Limit allowed durations for a state based on the subject's rhythm profile.
 def get_allowed_durations(state_name):
     subject_durations = get_subject_durations()
@@ -315,6 +330,22 @@ def build_candidate_entry(generated_stream, voice_streams, score, episode_plan=N
         "episode_plan": copy.deepcopy(episode_plan),
     }
 
+# Deep-copy one committed section entry.
+def copy_section_entry(section_entry):
+    return {
+        "state_name": section_entry["state_name"],
+        "source_voice_id": section_entry["source_voice_id"],
+        "target_role": section_entry["target_role"],
+        "section_length_16ths": section_entry["section_length_16ths"],
+        "generated_length_16ths": section_entry["generated_length_16ths"],
+        "generated_stream": clone_stream(section_entry["generated_stream"]),
+        "voice_streams": copy_voice_streams(section_entry["voice_streams"]),
+    }
+
+# Deep-copy the committed section history.
+def copy_section_history(section_history):
+    return [copy_section_entry(entry) for entry in section_history]
+
 # Return a stable signature for one candidate record.
 def candidate_signature(candidate):
     return voice_streams_signature(candidate.get("voice_streams", {}))
@@ -337,6 +368,7 @@ def snapshot_runtime_state():
         'generated_streams': copy_candidate_entries(global_state.get('generated_streams', [])),
         'last_voice_streams': copy_voice_streams(global_state.get('last_voice_streams', {})),
         'committed_history_streams': copy_voice_streams(global_state.get('committed_history_streams', {})),
+        'section_history': copy_section_history(global_state.get('section_history', [])),
         'meter_info': normalize_meter_info(global_state.get('meter_info')),
         'key_info': normalize_key_info(global_state.get('key_info')),
         'tonic_pc': get_tonic_pc(),
@@ -351,6 +383,7 @@ def restore_runtime_state(state_snapshot):
     global_state['generated_streams'] = copy_candidate_entries(state_snapshot['generated_streams'])
     global_state['last_voice_streams'] = state_snapshot['last_voice_streams']
     global_state['committed_history_streams'] = state_snapshot['committed_history_streams']
+    global_state['section_history'] = copy_section_history(state_snapshot.get('section_history', []))
     global_state['meter_info'] = state_snapshot['meter_info']
     global_state['key_info'] = state_snapshot.get('key_info', DEFAULT_KEY_INFO.copy())
     global_state['tonic_pc'] = state_snapshot.get('tonic_pc', 0)
@@ -609,6 +642,137 @@ def stream_signature(m21_stream):
         for n in m21_stream.flatten().notesAndRests
     )
 
+# Check whether an interval is consonant for a specific voice pair.
+def is_consonant_for_pair(voice_a, voice_b, interval):
+    if 2 in (voice_a, voice_b):
+        return interval in BASS_CONSONANCES
+    return interval in UPPER_VOICE_CONSONANCES
+
+# Copy the opening portion of a stream measured in 16th-note units.
+def take_stream_prefix(m21_stream, prefix_16ths):
+    prefix = stream.Stream()
+    copied = 0
+    for n in clone_stream(m21_stream).flatten().notesAndRests:
+        dur_16ths = int(n.quarterLength / 0.25)
+        if copied >= prefix_16ths or dur_16ths <= 0:
+            break
+        prefix.append(n)
+        copied += dur_16ths
+    return prefix
+
+# Measure the shared section span of a rendered three-voice bundle.
+def get_voice_streams_length_16ths(voice_streams):
+    return max((get_stream_length_16ths(m21_stream) for m21_stream in voice_streams.values()), default=0)
+
+# Slice a monophonic stream by 16th-note offsets, splitting notes at boundaries.
+def slice_stream_16ths(m21_stream, start_16ths, length_16ths):
+    sliced = stream.Stream()
+    if not m21_stream or length_16ths <= 0:
+        return sliced
+
+    end_16ths = start_16ths + length_16ths
+    offset = 0
+    for n in m21_stream.flatten().notesAndRests:
+        dur_16ths = int(n.quarterLength / 0.25)
+        event_start = offset
+        event_end = offset + dur_16ths
+        overlap_start = max(start_16ths, event_start)
+        overlap_end = min(end_16ths, event_end)
+        overlap_16ths = overlap_end - overlap_start
+        if overlap_16ths > 0:
+            if n.isRest:
+                sliced.append(note.Rest(quarterLength=overlap_16ths * 0.25))
+            else:
+                sliced.append(note.Note(n.pitch.midi, quarterLength=overlap_16ths * 0.25))
+        offset = event_end
+        if offset >= end_16ths:
+            break
+
+    return sliced
+
+# Slice all three voices over the same 16th-note span.
+def slice_voice_streams(voice_streams, start_16ths, length_16ths):
+    return {
+        voice_id: slice_stream_16ths(voice_streams.get(voice_id, stream.Stream()), start_16ths, length_16ths)
+        for voice_id in VOICE_IDS
+    }
+
+# Tie repeated weak-beat reattacks when they introduce a dissonant crunch.
+def smooth_repeated_weak_dissonances(voice_streams, active_voice_id):
+    active_stream = voice_streams.get(active_voice_id)
+    if not active_stream:
+        return stream.Stream()
+
+    notes = list(active_stream.flatten().notesAndRests)
+    if len(notes) < 2:
+        return clone_stream(active_stream)
+
+    meter_info = get_meter_info()
+    beat_16ths = max(1, int(round(16.0 / meter_info["denominator"])))
+    total_16ths = max((get_stream_length_16ths(m21_stream) for m21_stream in voice_streams.values()), default=0)
+    other_grids = {
+        voice_id: stream_to_pitch_grid(m21_stream, total_16ths)
+        for voice_id, m21_stream in voice_streams.items()
+        if voice_id != active_voice_id
+    }
+
+    flattened = []
+    offset = 0
+    for n in notes:
+        dur_16ths = int(n.quarterLength / 0.25)
+        flattened.append({
+            "pitch": -1 if n.isRest else n.pitch.midi,
+            "quarter_length": n.quarterLength,
+            "start": offset,
+            "duration_16ths": dur_16ths,
+            "is_rest": n.isRest,
+        })
+        offset += dur_16ths
+
+    smoothed = []
+    for current in flattened:
+        if smoothed:
+            previous = smoothed[-1]
+            is_repeated_pitch = (
+                not previous["is_rest"]
+                and not current["is_rest"]
+                and previous["pitch"] == current["pitch"]
+            )
+            starts_on_weak_beat = (current["start"] % beat_16ths) != 0
+            if is_repeated_pitch and starts_on_weak_beat:
+                for voice_id, grid in other_grids.items():
+                    if current["start"] >= len(grid):
+                        continue
+                    other_pitch = grid[current["start"]]
+                    if other_pitch == -1:
+                        continue
+                    interval = abs(current["pitch"] - other_pitch) % 12
+                    if not is_consonant_for_pair(active_voice_id, voice_id, interval):
+                        previous["quarter_length"] += current["quarter_length"]
+                        previous["duration_16ths"] += current["duration_16ths"]
+                        break
+                else:
+                    smoothed.append(current.copy())
+                continue
+        smoothed.append(current.copy())
+
+    new_stream = stream.Stream()
+    for event in smoothed:
+        if event["is_rest"]:
+            new_stream.append(note.Rest(quarterLength=event["quarter_length"]))
+        else:
+            new_stream.append(note.Note(event["pitch"], quarterLength=event["quarter_length"]))
+    return new_stream
+
+# Recover the stored generated line from the rendered voice bundle.
+def rendered_generated_stream(generated_stream, voice_streams, active_voice_id, state_name):
+    active_stream = voice_streams.get(active_voice_id)
+    if not active_stream:
+        return clone_stream(generated_stream)
+    if state_name == 'EPISODE':
+        return take_stream_prefix(active_stream, get_stream_length_16ths(generated_stream))
+    return clone_stream(active_stream)
+
 # Score a generated line with melodic, registral, and issue-based penalties.
 def score_generated_solution(generated_stream, voice_streams, active_voice_id, prev_pitch, state_name, issue_map=None):
     pitches = get_pitch_list(generated_stream)
@@ -676,6 +840,49 @@ def score_generated_solution(generated_stream, voice_streams, active_voice_id, p
     if state_name in ['EXPO_2', 'EXPO_3']:
         score += sum(1 for i in range(len(pitches) - 1) if abs(pitches[i + 1] - pitches[i]) >= 5) * 3
 
+    if state_name == 'EPISODE':
+        support_voice_id = next(
+            (voice_id for voice_id in VOICE_IDS if voice_id != active_voice_id and get_pitch_list(voice_streams.get(voice_id))),
+            None,
+        )
+        if support_voice_id is not None:
+            support_prefix = take_stream_prefix(
+                voice_streams[support_voice_id],
+                get_stream_length_16ths(generated_stream),
+            )
+            support_pitches = get_pitch_list(support_prefix)
+            generated_durations = [
+                int(n.quarterLength / 0.25)
+                for n in generated_stream.flatten().notesAndRests
+                if n.quarterLength > 0
+            ]
+            support_durations = [
+                int(n.quarterLength / 0.25)
+                for n in support_prefix.flatten().notesAndRests
+                if n.quarterLength > 0
+            ]
+
+            if active_voice_id == 2:
+                if blueprint.episode_count <= 1:
+                    if generated_durations != support_durations:
+                        score += 8
+                else:
+                    if generated_durations == support_durations:
+                        score += 9
+                    else:
+                        score -= 4
+                    if len(set(generated_durations)) > 1:
+                        score -= 3
+
+                if support_pitches and len(pitches) > 1:
+                    bass_motion = pitches[-1] - pitches[0]
+                    support_motion = support_pitches[-1] - support_pitches[0]
+                    if bass_motion != 0 and support_motion != 0:
+                        if blueprint.episode_count <= 1 and ((bass_motion > 0) != (support_motion > 0)):
+                            score += 5
+                        elif blueprint.episode_count > 1 and ((bass_motion > 0) != (support_motion > 0)):
+                            score -= 5
+
     voice_issues = issue_map if issue_map is not None else analyze_voice_streams(
         voice_streams,
         meter_info=get_meter_info(),
@@ -684,23 +891,24 @@ def score_generated_solution(generated_stream, voice_streams, active_voice_id, p
 
     return score
 
-# Convert the plugin's JSON note payload into a music21 stream.
-def convert_json_to_stream(json_payload):
+# Convert a note-event payload into a music21 stream.
+def convert_note_events_to_stream(note_events, use_offsets=False):
     result = stream.Stream()
-    subject_data = json_payload.get('subject', [])
+    current_offset_ticks = 0
     
     i = 0
-    while i < len(subject_data):
-        n = subject_data[i]
+    while i < len(note_events):
+        n = note_events[i]
         pitch = n.get('pitch')
         q_len = n.get('ticks') / 480.0 
-        offset_ql = n.get('offset_ticks', 0) / 480.0 
+        offset_ticks = n.get('offset_ticks', current_offset_ticks) if use_offsets else current_offset_ticks
+        offset_ql = offset_ticks / 480.0
         
         is_tied = n.get('tie', False)
         
-        while is_tied and i + 1 < len(subject_data) and subject_data[i+1].get('pitch') == pitch:
+        while is_tied and i + 1 < len(note_events) and note_events[i+1].get('pitch') == pitch:
             i += 1
-            next_n = subject_data[i]
+            next_n = note_events[i]
             q_len += (next_n.get('ticks') / 480.0)
             is_tied = next_n.get('tie', False)
             
@@ -710,9 +918,14 @@ def convert_json_to_stream(json_payload):
             new_note = note.Note(pitch, quarterLength=q_len)
 
         result.insert(offset_ql, new_note) 
+        current_offset_ticks = offset_ticks + int(q_len * 480)
         i += 1
-        
+
     return result
+
+# Convert the plugin's JSON note payload into a music21 stream.
+def convert_json_to_stream(json_payload):
+    return convert_note_events_to_stream(json_payload.get('subject', []), use_offsets=True)
 
 # Build a tonal answer by transposing the subject with standard adjustment.
 def create_tonal_answer(m21_stream):
@@ -754,11 +967,12 @@ def get_episode_plan_templates():
     return [copy.deepcopy(plan) for plan in EPISODE_PLAN_TEMPLATES]
 
 # Convert an episode plan and step index into a diatonic shift amount.
-def get_episode_step_shift(episode_plan, step_index):
+def get_episode_step_shift(episode_plan, step_index, part_kind='generated'):
     if not episode_plan or step_index <= 0:
         return 0
 
-    direction = episode_plan.get("direction", "down")
+    direction_key = 'generated_direction' if part_kind == 'generated' else 'support_direction'
+    direction = episode_plan.get(direction_key, episode_plan.get("direction", "down"))
     step_size = max(1, int(episode_plan.get("step_size", 1)))
     shift = step_index * step_size
     if direction == "up":
@@ -766,9 +980,9 @@ def get_episode_step_shift(episode_plan, step_index):
     return shift
 
 # Apply one sequential episode transformation step to a generated stream.
-def apply_episode_step(m21_stream, episode_plan, voice_id, step_index):
+def apply_episode_step(m21_stream, episode_plan, voice_id, step_index, part_kind='generated'):
     transformed = clone_stream(m21_stream)
-    shift = get_episode_step_shift(episode_plan, step_index)
+    shift = get_episode_step_shift(episode_plan, step_index, part_kind=part_kind)
     if shift:
         transformed = diatonic_sequence(transformed, shift)
         transformed = fit_stream_to_voice_range(transformed, voice_id)
@@ -859,15 +1073,24 @@ def score_episode_plan_context(episode_plan, instructions, target_voice_id):
     room_below = max(0, target_pitch - low)
     room_above = max(0, high - target_pitch)
 
-    direction = episode_plan.get("direction", "down")
+    direction = episode_plan.get("generated_direction", episode_plan.get("direction", "down"))
+    support_direction = episode_plan.get("support_direction", direction)
+    generated_direction = episode_plan.get("generated_direction", direction)
     step_size = max(1, int(episode_plan.get("step_size", 1)))
     kind = episode_plan.get("kind", "sequence")
+    contrary_motion = support_direction != generated_direction
 
     score = 0.0
     if kind == "false_entry":
         score += 5 if blueprint.episode_count <= 1 else 1
     else:
         score -= 1
+
+    if contrary_motion:
+        if target_voice_id == 2 and blueprint.episode_count > 1:
+            score -= 6
+        else:
+            score += 5
 
     if direction == "down":
         if average_pitch >= 68:
@@ -929,6 +1152,12 @@ def score_seed_candidate(seed_stream, instructions, target_gen_role, state_name,
         state_name,
         episode_plan=episode_plan,
     )
+    seed_stream = rendered_generated_stream(
+        seed_stream,
+        voice_streams,
+        target_voice_id,
+        state_name,
+    )
     issues, _ = evaluate_candidate_voice_streams(voice_streams, check_weak_dissonances=True)
     score = score_generated_solution(
         seed_stream,
@@ -968,9 +1197,10 @@ def build_episode_fallback(instructions, target_gen_role, state_name, episode_pl
         if not get_pitch_list(support_stream):
             continue
 
-        if episode_plan and episode_plan.get("direction") == "up":
+        plan_direction = episode_plan.get("generated_direction", episode_plan.get("direction")) if episode_plan else None
+        if plan_direction == "up":
             shift_options = [2, 1, 3, 4, -1]
-        elif episode_plan and episode_plan.get("direction") == "down":
+        elif plan_direction == "down":
             shift_options = [-2, -1, -3, -4, 1]
         elif target_voice_id < support_voice_id:
             shift_options = [-1, -2, -3, -4, -5]
@@ -1073,7 +1303,13 @@ def resolve_role_stream(role, voice_id, state_name, sequence_step=0, episode_pla
     resolved_stream = fit_stream_to_voice_range(resolved_stream, voice_id, reference_pitch=reference_pitch)
 
     if state_name == 'EPISODE' and sequence_step > 0:
-        resolved_stream = apply_episode_step(resolved_stream, episode_plan, voice_id, sequence_step)
+        resolved_stream = apply_episode_step(
+            resolved_stream,
+            episode_plan,
+            voice_id,
+            sequence_step,
+            part_kind='support',
+        )
 
     return resolved_stream
 
@@ -1088,7 +1324,7 @@ def assemble_voice_streams(instructions, target_gen_role, generated_stream, stat
     generated_steps = [generated_stream]
     if state_name == 'EPISODE':
         generated_steps = [
-            apply_episode_step(generated_stream, episode_plan, target_voice_id, step)
+            apply_episode_step(generated_stream, episode_plan, target_voice_id, step, part_kind='generated')
             for step in range(step_count)
         ]
 
@@ -1115,6 +1351,10 @@ def assemble_voice_streams(instructions, target_gen_role, generated_stream, stat
             step_voice_streams,
             protected_voice_ids={target_voice_id},
         )
+        step_voice_streams[target_voice_id] = smooth_repeated_weak_dissonances(
+            step_voice_streams,
+            target_voice_id,
+        )
         for voice_id, current_stream in step_voice_streams.items():
             voice_parts[voice_id].append(current_stream)
 
@@ -1135,6 +1375,7 @@ def stream_to_payload(m21_stream):
 # Prepare solver inputs and anchors for the next generation attempt.
 def prepare_generation_context(instructions, target_gen_role, state_name):
     existing_voice_streams = {}
+    existing_voice_ids = []
     prev_gen_pitch = -1
     active_voice_id = get_target_voice_id(instructions, target_gen_role) or 0
 
@@ -1157,16 +1398,20 @@ def prepare_generation_context(instructions, target_gen_role, state_name):
             continue
         role_stream = existing_voice_streams[v_id]
         existing_streams.append(role_stream)
+        existing_voice_ids.append(v_id)
         prev_ext_pitches.append(get_last_pitch(role_stream))
 
-    return existing_streams, prev_ext_pitches, active_voice_id, prev_gen_pitch
+    return existing_streams, existing_voice_ids, prev_ext_pitches, active_voice_id, prev_gen_pitch
 
 # Construct and configure a FugueSolver for one generation attempt.
-def build_solver_for_attempt(existing_streams, active_voice_id, prev_gen_pitch, prev_ext_pitches, state_name, episode_plan=None):
+def build_solver_for_attempt(existing_streams, existing_voice_ids, active_voice_id, prev_gen_pitch, prev_ext_pitches, state_name, episode_plan=None):
     locked_prefix = None
     note_budget = get_note_budget(state_name)
     if state_name == 'EPISODE':
         locked_prefix = build_episode_locked_prefix(episode_plan, active_voice_id)
+        if active_voice_id == 2 and blueprint.episode_count > 1:
+            subject_length = max(1, get_stream_length_16ths(blueprint.motives.get('subject')))
+            note_budget = min(subject_length, note_budget + 2)
         if locked_prefix:
             locked_note_count = len(list(locked_prefix.flatten().notesAndRests))
             note_budget = max(note_budget, locked_note_count + 2)
@@ -1182,6 +1427,8 @@ def build_solver_for_attempt(existing_streams, active_voice_id, prev_gen_pitch, 
         allowed_durations=get_allowed_durations(state_name),
         locked_prefix=locked_prefix,
         tonic_pc=get_tonic_pc(),
+        meter_info=get_meter_info(),
+        fixed_voice_ids=existing_voice_ids,
     )
     solver.setup_rules()
     return solver
@@ -1202,6 +1449,12 @@ def ordered_unique_candidates(candidates, desired_count):
 
 # Wrap a fallback stream into the same candidate format as solver outputs.
 def build_candidate_from_fallback(fallback_stream, fallback_voices, active_voice_id, prev_pitch, state_name, episode_plan=None, plan_penalty=0.0):
+    fallback_stream = rendered_generated_stream(
+        fallback_stream,
+        fallback_voices,
+        active_voice_id,
+        state_name,
+    )
     fallback_score = score_generated_solution(
         fallback_stream,
         fallback_voices,
@@ -1217,9 +1470,8 @@ def build_candidate_from_fallback(fallback_stream, fallback_voices, active_voice
     )
 
 # Collect valid solver outputs for one state, including fallback recovery.
-def collect_valid_solutions(fs, instructions, target_gen_role, state_name, active_voice_id, prev_pitch, used_signatures=None, max_attempts=None, desired_count=1, episode_plan=None, plan_penalty=0.0):
+def collect_valid_solutions(fs, instructions, target_gen_role, state_name, active_voice_id, prev_pitch, used_signatures=None, max_attempts=None, desired_count=1, episode_plan=None, plan_penalty=0.0, check_weak_dissonances=True, score_strict_issues=False):
     last_issues = {}
-    check_weak_dissonances = True
     if max_attempts is not None:
         attempt_limit = max_attempts
     else:
@@ -1240,6 +1492,12 @@ def collect_valid_solutions(fs, instructions, target_gen_role, state_name, activ
             state_name,
             episode_plan=episode_plan,
         )
+        generated_stream = rendered_generated_stream(
+            generated_stream,
+            voice_streams,
+            active_voice_id,
+            state_name,
+        )
         signature = voice_streams_signature(voice_streams)
         if signature in used_signatures:
             continue
@@ -1249,13 +1507,19 @@ def collect_valid_solutions(fs, instructions, target_gen_role, state_name, activ
             check_weak_dissonances=check_weak_dissonances,
         )
         if not any(issues.values()):
+            score_issue_map = issues
+            if score_strict_issues and not check_weak_dissonances:
+                score_issue_map, _ = evaluate_candidate_voice_streams(
+                    voice_streams,
+                    check_weak_dissonances=True,
+                )
             score = score_generated_solution(
                 generated_stream,
                 voice_streams,
                 active_voice_id,
                 prev_pitch,
                 state_name,
-                issue_map=issues,
+                issue_map=score_issue_map,
             )
             valid_candidates.append(
                 build_candidate_entry(
@@ -1310,17 +1574,20 @@ def collect_valid_solutions(fs, instructions, target_gen_role, state_name, activ
     return [], summarize_issues(last_issues)
 
 # Collect and rank candidates for the current state across its plan options.
-def collect_state_candidates(instructions, target_gen_role, state_name, active_voice_id, prev_pitch, existing_streams, prev_ext_pitches, used_signatures=None, desired_count=1):
+def collect_state_candidates(instructions, target_gen_role, state_name, active_voice_id, prev_pitch, existing_streams, existing_voice_ids, prev_ext_pitches, used_signatures=None, desired_count=1):
     used_signatures = used_signatures or set()
+    allow_relaxed_weak_checks = subject_has_mixed_rhythm()
+
     if state_name != 'EPISODE':
         solver = build_solver_for_attempt(
             existing_streams,
+            existing_voice_ids,
             active_voice_id,
             prev_pitch,
             prev_ext_pitches,
             state_name,
         )
-        return collect_valid_solutions(
+        candidates, issues = collect_valid_solutions(
             solver,
             instructions,
             target_gen_role,
@@ -1330,7 +1597,29 @@ def collect_state_candidates(instructions, target_gen_role, state_name, active_v
             used_signatures=used_signatures,
             desired_count=desired_count,
         )
+        if candidates or not allow_relaxed_weak_checks:
+            return candidates, issues
 
+        relaxed_solver = build_solver_for_attempt(
+            existing_streams,
+            existing_voice_ids,
+            active_voice_id,
+            prev_pitch,
+            prev_ext_pitches,
+            state_name,
+        )
+        return collect_valid_solutions(
+            relaxed_solver,
+            instructions,
+            target_gen_role,
+            state_name,
+            active_voice_id,
+            prev_pitch,
+            used_signatures=used_signatures,
+            desired_count=desired_count,
+            check_weak_dissonances=False,
+            score_strict_issues=True,
+        )
     all_candidates = []
     last_issues = []
     seen_signatures = set(used_signatures)
@@ -1338,10 +1627,11 @@ def collect_state_candidates(instructions, target_gen_role, state_name, active_v
     primary_plan_count = min(4, len(ranked_plans))
 
     # Extend the candidate pool with solver results from one episode plan.
-    def extend_with_plan(plan, plan_index, per_plan_goal):
+    def extend_with_plan(plan, plan_index, per_plan_goal, allow_relaxed_pass=False):
         nonlocal all_candidates, last_issues, seen_signatures
         solver = build_solver_for_attempt(
             existing_streams,
+            existing_voice_ids,
             active_voice_id,
             prev_pitch,
             prev_ext_pitches,
@@ -1360,6 +1650,30 @@ def collect_state_candidates(instructions, target_gen_role, state_name, active_v
             episode_plan=plan,
             plan_penalty=plan_index * 6.0,
         )
+        if not candidates and allow_relaxed_pass:
+            relaxed_solver = build_solver_for_attempt(
+                existing_streams,
+                existing_voice_ids,
+                active_voice_id,
+                prev_pitch,
+                prev_ext_pitches,
+                state_name,
+                episode_plan=plan,
+            )
+            candidates, issues = collect_valid_solutions(
+                relaxed_solver,
+                instructions,
+                target_gen_role,
+                state_name,
+                active_voice_id,
+                prev_pitch,
+                used_signatures=seen_signatures,
+                desired_count=per_plan_goal,
+                episode_plan=plan,
+                plan_penalty=plan_index * 6.0,
+                check_weak_dissonances=False,
+                score_strict_issues=True,
+            )
         if candidates:
             for candidate in candidates:
                 signature = candidate_signature(candidate)
@@ -1371,11 +1685,11 @@ def collect_state_candidates(instructions, target_gen_role, state_name, active_v
             last_issues = issues
 
     for plan_index, plan in enumerate(ranked_plans[:primary_plan_count]):
-        extend_with_plan(plan, plan_index, 2)
+        extend_with_plan(plan, plan_index, 2, allow_relaxed_pass=allow_relaxed_weak_checks)
 
     if len(all_candidates) < desired_count:
         for plan_index, plan in enumerate(ranked_plans[primary_plan_count:], start=primary_plan_count):
-            extend_with_plan(plan, plan_index, 1)
+            extend_with_plan(plan, plan_index, 1, allow_relaxed_pass=allow_relaxed_weak_checks)
             if len(all_candidates) >= desired_count:
                 break
 
@@ -1422,6 +1736,140 @@ def update_generated_motive(state_name, generated_stream, source_voice_id):
             blueprint.motives['episode_line'] = generated_stream
             blueprint.motive_sources['episode_line'] = source_voice_id
 
+# Build one committed section entry for history syncing and restore.
+def make_section_history_entry(state_name, generated_stream, voice_streams, source_voice_id, target_role):
+    return {
+        "state_name": state_name,
+        "source_voice_id": source_voice_id,
+        "target_role": target_role,
+        "section_length_16ths": get_voice_streams_length_16ths(voice_streams),
+        "generated_length_16ths": get_stream_length_16ths(generated_stream),
+        "generated_stream": clone_stream(generated_stream),
+        "voice_streams": copy_voice_streams(voice_streams),
+    }
+
+# Record one committed section so edited score history can be re-imported later.
+def append_section_history_entry(state_name, generated_stream, voice_streams, source_voice_id, target_role):
+    global_state.setdefault('section_history', []).append(
+        make_section_history_entry(state_name, generated_stream, voice_streams, source_voice_id, target_role)
+    )
+
+# Rebuild the stored motive cache from the committed section history.
+def rebuild_motives_from_section_history():
+    section_history = global_state.get('section_history', [])
+    blueprint.motives['cs1'] = None
+    blueprint.motives['cs2'] = None
+    blueprint.motives['free_melody'] = None
+    blueprint.motives['episode_line'] = None
+
+    for entry in section_history:
+        if entry['state_name'] == 'SUBJECT':
+            blueprint.motives['subject'] = clone_stream(entry['generated_stream'])
+            blueprint.motive_sources['subject'] = ROLE_SOURCE_VOICE['subject']
+            continue
+        update_generated_motive(
+            entry['state_name'],
+            clone_stream(entry['generated_stream']),
+            entry['source_voice_id'],
+        )
+
+# Render a committed section-history list back into continuous three-voice streams.
+def render_section_history_streams(section_history):
+    rendered = make_empty_voice_streams()
+    for entry in section_history:
+        rendered = extend_voice_streams(rendered, entry['voice_streams'])
+    return rendered
+
+# Build a stable comparison key for one structured evaluator issue.
+def issue_event_key(issue_event):
+    return (
+        issue_event.get('id', ''),
+        int(issue_event.get('offset', -1)),
+        tuple(issue_event.get('voices', [])),
+    )
+
+# Import the current score history, validate edits, and refresh cached motives.
+def sync_committed_history_from_payload(history_payload, pending_section_entry=None, skip_issue_validation=False):
+    section_history = copy_section_history(global_state.get('section_history', []))
+    if pending_section_entry is not None:
+        section_history.append(copy_section_entry(pending_section_entry))
+    if not history_payload or not section_history:
+        return []
+
+    history_streams = {
+        voice_id: convert_note_events_to_stream(history_payload.get(f'voice_{voice_id}', []))
+        for voice_id in VOICE_IDS
+    }
+    expected_length = sum(entry['section_length_16ths'] for entry in section_history)
+    actual_length = get_voice_streams_length_16ths(history_streams)
+    if actual_length != expected_length:
+        return [
+            "Edited score length no longer matches the generated layout. Keep the same total durations for now."
+        ]
+
+    window_start_16ths = 0
+    if len(section_history) > 1:
+        window_start_16ths = sum(
+            entry['section_length_16ths']
+            for entry in section_history[:-2]
+        )
+
+    def issue_in_sync_window(issue_event):
+        return int(issue_event.get('offset', -1)) >= window_start_16ths
+
+    if not skip_issue_validation:
+        baseline_streams = render_section_history_streams(section_history)
+        baseline_issue_events = evaluate_counterpoint_issues(
+            baseline_streams,
+            meter_info=get_meter_info(),
+        )
+        baseline_issue_keys = {
+            issue_event_key(issue_event)
+            for issue_event in baseline_issue_events
+            if issue_in_sync_window(issue_event)
+        }
+
+        edited_issue_events = evaluate_counterpoint_issues(
+            history_streams,
+            meter_info=get_meter_info(),
+        )
+        introduced_issues = [
+            issue_event
+            for issue_event in edited_issue_events
+            if issue_in_sync_window(issue_event) and issue_event_key(issue_event) not in baseline_issue_keys
+        ]
+        if introduced_issues:
+            return [
+                f"{issue.get('location', 'Unknown location')}: {issue.get('summary', 'Counterpoint issue.')}"
+                for issue in introduced_issues[:3]
+            ]
+
+    synced_sections = []
+    start_16ths = 0
+    for entry in section_history:
+        synced_entry = copy_section_entry(entry)
+        synced_entry['voice_streams'] = slice_voice_streams(
+            history_streams,
+            start_16ths,
+            entry['section_length_16ths'],
+        )
+        active_stream = synced_entry['voice_streams'].get(entry['source_voice_id'], stream.Stream())
+        synced_entry['generated_stream'] = take_stream_prefix(
+            active_stream,
+            entry['generated_length_16ths'],
+        )
+        synced_sections.append(synced_entry)
+        start_16ths += entry['section_length_16ths']
+
+    global_state['section_history'] = synced_sections
+    global_state['committed_history_streams'] = copy_voice_streams(history_streams)
+    global_state['last_voice_streams'] = (
+        copy_voice_streams(synced_sections[-1]['voice_streams'])
+        if synced_sections else {}
+    )
+    rebuild_motives_from_section_history()
+    return []
+
 # Commit one cached candidate into the fugue history and motive store.
 def commit_candidate_at_index(selected_idx):
     if len(global_state.get('generated_streams', [])) <= selected_idx:
@@ -1438,6 +1886,27 @@ def commit_candidate_at_index(selected_idx):
         committed_voice_streams,
     )
     update_generated_motive(blueprint.state, chosen_stream, source_voice_id)
+    append_section_history_entry(
+        blueprint.state,
+        chosen_stream,
+        committed_voice_streams,
+        source_voice_id,
+        global_state.get('target_gen_role', GEN_ROLE_BY_STATE.get(blueprint.state, 'free_melody')),
+    )
+
+# Build the section-history metadata for the currently displayed candidate.
+def build_pending_section_entry(selected_idx):
+    if len(global_state.get('generated_streams', [])) <= selected_idx:
+        return None
+
+    chosen_entry = global_state['generated_streams'][selected_idx]
+    return make_section_history_entry(
+        blueprint.state,
+        chosen_entry['generated_stream'],
+        chosen_entry['voice_streams'],
+        global_state.get('active_voice_id', 0),
+        global_state.get('target_gen_role', GEN_ROLE_BY_STATE.get(blueprint.state, 'free_melody')),
+    )
 
 # Initialize subject, answer, and committed history from the first user input.
 def initialize_subject(decision, data, meter_payload, key_payload):
@@ -1467,6 +1936,14 @@ def initialize_subject(decision, data, meter_payload, key_payload):
         1: make_rest_stream(subject_length),
         2: make_rest_stream(subject_length),
     }
+    global_state['section_history'] = []
+    append_section_history_entry(
+        'SUBJECT',
+        blueprint.motives['subject'],
+        global_state['committed_history_streams'],
+        0,
+        'subject',
+    )
 
 # Cache the current generation instructions and pitch anchor for reuse.
 def store_generation_context(instructions, target_gen_role, active_voice_id, prev_gen_pitch):
@@ -1509,6 +1986,8 @@ def generate_measure():
     selected_idx = int(data.get('selected_index', 0) or 0)
     meter_payload = data.get('meter_info') or {}
     key_payload = data.get('key_info') or {}
+    history_payload = data.get('history_excerpt') or None
+    history_validated = bool(data.get('history_validated'))
     blueprint_snapshot = None
     state_snapshot = None
     active_voice_id = global_state.get('active_voice_id', 0)
@@ -1525,7 +2004,22 @@ def generate_measure():
     
     if action == 'new':
         if global_state.get('generated_streams'):
-            commit_candidate_at_index(selected_idx)
+            if blueprint.state != 'INITIAL' and history_payload:
+                sync_issues = sync_committed_history_from_payload(
+                    history_payload,
+                    pending_section_entry=build_pending_section_entry(selected_idx),
+                    skip_issue_validation=history_validated,
+                )
+                if sync_issues:
+                    return jsonify({
+                        "status": "error",
+                        "message": format_generation_message(
+                            "Edited fugue introduces counterpoint issues. Use Evaluate or Restore Last Section before continuing:",
+                            sync_issues,
+                        ),
+                    })
+            else:
+                commit_candidate_at_index(selected_idx)
 
         if blueprint.state == 'INITIAL':
             initialize_subject(decision, data, meter_payload, key_payload)
@@ -1537,7 +2031,7 @@ def generate_measure():
         global_state['generated_streams'] = []
 
         target_gen_role = GEN_ROLE_BY_STATE.get(blueprint.state, 'free_melody')
-        _, _, active_voice_id, prev_gen_pitch = prepare_generation_context(
+        _, _, _, active_voice_id, prev_gen_pitch = prepare_generation_context(
             instructions,
             target_gen_role,
             blueprint.state,
@@ -1554,7 +2048,7 @@ def generate_measure():
     target_gen_role = global_state['target_gen_role']
     active_voice_id = global_state.get('active_voice_id', active_voice_id)
     prev_gen_pitch = global_state.get('anchor_pitch', prev_gen_pitch)
-    existing_streams, prev_ext_pitches, _, _ = prepare_generation_context(
+    existing_streams, existing_voice_ids, prev_ext_pitches, _, _ = prepare_generation_context(
         instructions,
         target_gen_role,
         blueprint.state,
@@ -1576,6 +2070,7 @@ def generate_measure():
         active_voice_id,
         prev_gen_pitch,
         existing_streams,
+        existing_voice_ids,
         prev_ext_pitches,
         used_signatures=used_signatures,
         desired_count=desired_count,
@@ -1587,7 +2082,10 @@ def generate_measure():
 
         message = "Z3 exhausted solutions."
         if issue_summary:
-            message = f"No valid solution survived the post-checks. Last issues: {' | '.join(issue_summary)}"
+            message = format_generation_message(
+                "No valid solution survived the post-checks. Last issues:",
+                issue_summary,
+            )
         return jsonify({"status": "error", "message": message})
 
     new_candidates = unique_new_candidates(candidate_solutions)

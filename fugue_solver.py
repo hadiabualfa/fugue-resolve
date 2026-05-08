@@ -7,6 +7,7 @@ VOICE_NAMES = {
     2: "Bass Voice",
 }
 PERFECT_INTERVALS = {0, 7}
+UPPER_VOICE_PARALLEL_INTERVALS = {5}
 UPPER_VOICE_CONSONANCES = {0, 3, 4, 5, 7, 8, 9}
 BASS_CONSONANCES = {0, 3, 4, 7, 8, 9}
 
@@ -94,30 +95,9 @@ def _is_strong_beat_consonance(interval, voice_a, voice_b):
 def _same_direction(motion_a, motion_b):
     return motion_a != 0 and motion_b != 0 and ((motion_a > 0 and motion_b > 0) or (motion_a < 0 and motion_b < 0))
 
-# Allow passing-style weak-beat dissonances when the motion supports them.
-def _is_weak_dissonance_allowed(moving_grid, fixed_grid, offset_16ths):
-    if offset_16ths <= 0 or offset_16ths >= len(moving_grid) - 1:
-        return False
-
-    prev_pitch = moving_grid[offset_16ths - 1]
-    curr_pitch = moving_grid[offset_16ths]
-    next_pitch = moving_grid[offset_16ths + 1]
-    if -1 in (prev_pitch, curr_pitch, next_pitch):
-        return False
-
-    if fixed_grid[offset_16ths - 1] != fixed_grid[offset_16ths] or fixed_grid[offset_16ths] != fixed_grid[offset_16ths + 1]:
-        return False
-
-    motion_in = curr_pitch - prev_pitch
-    motion_out = next_pitch - curr_pitch
-    if motion_in == 0 or motion_out == 0:
-        return False
-
-    stepwise = abs(motion_in) <= 2 and abs(motion_out) <= 2
-    if not stepwise:
-        return False
-
-    return _same_direction(motion_in, motion_out) or prev_pitch == next_pitch
+# Check whether a voice pair forms a discouraged upper-voice parallel interval.
+def _is_upper_voice_parallel_interval(interval, voice_a, voice_b):
+    return {voice_a, voice_b} == {0, 1} and interval in UPPER_VOICE_PARALLEL_INTERVALS
 
 # Convert a stream into note/rest events with explicit spans.
 def _stream_to_events(m21_stream):
@@ -147,6 +127,68 @@ def _active_event_at(events, offset_16ths):
         if event["start"] <= offset_16ths < event["end"]:
             return event
     return None
+
+# Find the index of the event active at a given 16th-note offset.
+def _active_event_index(events, offset_16ths):
+    for index, event in enumerate(events):
+        if event["start"] <= offset_16ths < event["end"]:
+            return index
+    return None
+
+# Allow passing-style weak-beat dissonances when the surrounding events support them.
+def _is_weak_dissonance_allowed(moving_events, fixed_grid, offset_16ths):
+    active_index = _active_event_index(moving_events, offset_16ths)
+    if active_index is None:
+        return False
+
+    current_event = moving_events[active_index]
+    if current_event["isRest"]:
+        return False
+
+    current_start = current_event["start"]
+    current_end = current_event["end"]
+    if current_start <= 0 or current_end >= len(fixed_grid):
+        return False
+
+    fixed_pitch = fixed_grid[offset_16ths]
+    if fixed_pitch == -1:
+        return False
+
+    for tick in range(current_start, min(current_end, len(fixed_grid))):
+        if fixed_grid[tick] != fixed_pitch:
+            return False
+
+    previous_event = None
+    for index in range(active_index - 1, -1, -1):
+        if not moving_events[index]["isRest"]:
+            previous_event = moving_events[index]
+            break
+
+    next_event = None
+    for index in range(active_index + 1, len(moving_events)):
+        if not moving_events[index]["isRest"]:
+            next_event = moving_events[index]
+            break
+
+    if previous_event is None or next_event is None:
+        return False
+
+    prev_pitch = previous_event["pitch"]
+    curr_pitch = current_event["pitch"]
+    next_pitch = next_event["pitch"]
+    if -1 in (prev_pitch, curr_pitch, next_pitch):
+        return False
+
+    motion_in = curr_pitch - prev_pitch
+    motion_out = next_pitch - curr_pitch
+    if motion_in == 0 or motion_out == 0:
+        return False
+
+    stepwise = abs(motion_in) <= 2 and abs(motion_out) <= 2
+    if not stepwise:
+        return False
+
+    return _same_direction(motion_in, motion_out) or prev_pitch == next_pitch
 
 # Build note references for every sounding voice at a given offset.
 def _note_refs_for_offset(events_by_voice, voice_ids, offset_16ths):
@@ -230,8 +272,8 @@ def evaluate_counterpoint_issues(voice_streams, meter_info=None):
 
                 if not _is_strong_beat_consonance(interval, voice_a, voice_b):
                     if not (
-                        _is_weak_dissonance_allowed(grids[voice_a], grids[voice_b], offset)
-                        or _is_weak_dissonance_allowed(grids[voice_b], grids[voice_a], offset)
+                        _is_weak_dissonance_allowed(events_by_voice[voice_a], grids[voice_b], offset)
+                        or _is_weak_dissonance_allowed(events_by_voice[voice_b], grids[voice_a], offset)
                     ):
                         beat_type = "Strong-beat" if offset in strong_beat_offsets else "Unprepared weak-beat"
                         add_issue(
@@ -279,6 +321,16 @@ def evaluate_counterpoint_issues(voice_streams, meter_info=None):
                             "Direct fifth or octave in the outer voices.",
                         )
 
+                if (_is_upper_voice_parallel_interval(prev_interval, voice_a, voice_b)
+                    and _is_upper_voice_parallel_interval(curr_interval, voice_a, voice_b)
+                    and motion_a != 0 and motion_b != 0 and _same_direction(motion_a, motion_b)):
+                    add_issue(
+                        f"parallel_fourth_{voice_a}_{voice_b}",
+                        [voice_a, voice_b],
+                        offset,
+                        "Parallel fourth between the top and middle voices.",
+                    )
+
     return issues
 
 # Produce per-voice textual issue lists for generation-time validation.
@@ -293,6 +345,10 @@ def analyze_voice_streams(voice_streams, check_weak_dissonances=True, meter_info
 
     grids = {
         voice_id: _stream_to_pitch_grid(m21_stream, total_16ths)
+        for voice_id, m21_stream in voice_streams.items()
+    }
+    events_by_voice = {
+        voice_id: _stream_to_events(m21_stream)
         for voice_id, m21_stream in voice_streams.items()
     }
     issue_events = []
@@ -340,8 +396,8 @@ def analyze_voice_streams(voice_streams, check_weak_dissonances=True, meter_info
                         )
                 elif check_weak_dissonances and not _is_strong_beat_consonance(interval, voice_a, voice_b):
                     if not (
-                        _is_weak_dissonance_allowed(grids[voice_a], grids[voice_b], offset)
-                        or _is_weak_dissonance_allowed(grids[voice_b], grids[voice_a], offset)
+                        _is_weak_dissonance_allowed(events_by_voice[voice_a], grids[voice_b], offset)
+                        or _is_weak_dissonance_allowed(events_by_voice[voice_b], grids[voice_a], offset)
                     ):
                         add_issue(
                             [voice_a, voice_b],
@@ -383,6 +439,15 @@ def analyze_voice_streams(voice_streams, check_weak_dissonances=True, meter_info
                             offset,
                         )
 
+                if (_is_upper_voice_parallel_interval(prev_interval, voice_a, voice_b)
+                    and _is_upper_voice_parallel_interval(curr_interval, voice_a, voice_b)
+                    and _same_direction(motion_a, motion_b)):
+                    add_issue(
+                        [voice_a, voice_b],
+                        f"Parallel fourth between the top and middle voices near {_format_location(offset, meter)}.",
+                        offset,
+                    )
+
     if return_events:
         return issues, issue_events
 
@@ -395,16 +460,19 @@ def _major_scale_pitch_classes(tonic_pc):
 # Solve one generated fugue line under the current rhythmic and contrapuntal rules.
 class FugueSolver(object):
     # Initialize the Z3 model, note budget, and fixed musical context for one solve.
-    def __init__(self, existing_streams, target_notes=None, prev_gen_pitch=None, prev_ext_pitches=None, strict_invertible=False, voice_id=0, target_chord=None, allowed_durations=None, locked_prefix=None, tonic_pc=0):
+    def __init__(self, existing_streams, target_notes=None, prev_gen_pitch=None, prev_ext_pitches=None, strict_invertible=False, voice_id=0, target_chord=None, allowed_durations=None, locked_prefix=None, tonic_pc=0, meter_info=None, fixed_voice_ids=None):
         self.s = Solver()
         self.s.set("timeout", 10000)
         self.existing_streams = existing_streams
+        self.fixed_voice_ids = list(fixed_voice_ids or [])
         self.prev_gen_pitch = prev_gen_pitch
         self.prev_ext_pitches = prev_ext_pitches 
         self.strict_invertible = strict_invertible
         self.voice_id = voice_id 
         self.target_chord = target_chord 
         self.tonic_pc = tonic_pc % 12
+        self.meter_info = _build_meter_info(meter_info)
+        self.beat_16ths = self.meter_info["beat_16ths"]
         self.allowed_durations = sorted(set(allowed_durations or [1, 2, 4, 8]))
         self.locked_prefix = []
         if locked_prefix:
@@ -550,20 +618,21 @@ class FugueSolver(object):
                 n_dur = self.new_durations[i]
                 n_p = self.new_pitches[i]
                 is_active = And(n_dur > 0, n_p != -1)
-                is_strong_beat = (n_off % 4 == 0)
+                is_strong_beat = (n_off % self.beat_16ths == 0)
                 
                 for f_off, f_dur, f_p in fixed_data:
                     if f_p == -1: continue
                     overlap = And(n_off < f_off + f_dur, n_off + n_dur > f_off)
                     interval = If(n_p >= f_p, n_p - f_p, f_p - n_p) % 12
-                    
+
                     is_consonant = Or(interval == 0, interval == 3, interval == 4, 
                                       interval == 5, interval == 7, interval == 8, interval == 9)
                     self.s.add(Implies(And(is_active, overlap, is_strong_beat), is_consonant))
 
     # Ban parallel perfect intervals against the fixed voices.
     def apply_parallel_rules(self):
-        for ext_stream in self.existing_streams:
+        for ext_index, ext_stream in enumerate(self.existing_streams):
+            fixed_voice_id = self.fixed_voice_ids[ext_index] if ext_index < len(self.fixed_voice_ids) else None
             fixed_data = [] 
             curr_off = 0
             for n in ext_stream.flatten().notesAndRests:
@@ -591,11 +660,14 @@ class FugueSolver(object):
                     is_parallel_5th = And(int1 == 7, int2 == 7)
                     is_parallel_8ve = And(int1 == 0, int2 == 0)
                     is_parallel_4th = And(int1 == 5, int2 == 5)
+                    blocked_intervals = [is_parallel_5th, is_parallel_8ve]
+                    if {self.voice_id, fixed_voice_id} == {0, 1}:
+                        blocked_intervals.append(is_parallel_4th)
                     
-                    if self.strict_invertible:
-                        self.s.add(Implies(And(both_sound, simultaneous_motion), Not(Or(is_parallel_5th, is_parallel_8ve, is_parallel_4th))))
-                    else:
-                        self.s.add(Implies(And(both_sound, simultaneous_motion), Not(Or(is_parallel_5th, is_parallel_8ve))))
+                    if self.strict_invertible and {self.voice_id, fixed_voice_id} != {0, 1}:
+                        blocked_intervals.append(is_parallel_4th)
+
+                    self.s.add(Implies(And(both_sound, simultaneous_motion), Not(Or(*blocked_intervals))))
 
     # Restrict generated pitches to the diatonic white-note collection.
     def apply_diatonic_scale_rule(self):
@@ -692,7 +764,7 @@ class FugueSolver(object):
 
         self.s.push()
         self.apply_parallel_rules()
-        if self.s.check() == unsat: mistakes.append("Harmonic error: Parallel 5ths or Octaves detected.")
+        if self.s.check() == unsat: mistakes.append("Harmonic error: Parallel 4ths, 5ths, or octaves detected.")
         self.s.pop()
         
         self.s.push()

@@ -143,9 +143,14 @@ function extractSelectionTrack(curScore, trackNum, selectionRange) {
         }
     }
 
+    var lastWrittenTick = selectionRange.startTick;
     while (cursor.segment && cursor.tick < selectionRange.endTick) {
         var element = cursor.element;
         if (element && element.duration) {
+            var startTick = cursor.tick;
+            if (startTick > lastWrittenTick) {
+                notes.push({ "pitch": -1, "ticks": startTick - lastWrittenTick, "tie": false });
+            }
             if (element.notes && element.notes.length > 0) {
                 var noteObj = element.notes[0];
                 var isTied = !!noteObj.tieForward;
@@ -153,11 +158,16 @@ function extractSelectionTrack(curScore, trackNum, selectionRange) {
             } else {
                 notes.push({ "pitch": -1, "ticks": element.duration.ticks, "tie": false });
             }
+            lastWrittenTick = startTick + element.duration.ticks;
         }
 
         if (!cursor.next()) {
             break;
         }
+    }
+
+    if (lastWrittenTick < selectionRange.endTick) {
+        notes.push({ "pitch": -1, "ticks": selectionRange.endTick - lastWrittenTick, "tie": false });
     }
 
     return notes;
@@ -169,7 +179,7 @@ function parseJsonResponse(xhr) {
 }
 
 // Ask the Python server for the next generated solution or alternative.
-function nextMeasure(subjectData, decision, action, selectedIdx, meterInfo, keyInfo, callback) {
+function nextMeasure(subjectData, decision, action, selectedIdx, meterInfo, keyInfo, historyExcerpt, historyValidated, callback) {
     pluginXhr = new XMLHttpRequest();
     pluginXhr.open("POST", "http://127.0.0.1:5000/generate", true);
     pluginXhr.setRequestHeader("Content-Type", "application/json");
@@ -199,7 +209,9 @@ function nextMeasure(subjectData, decision, action, selectedIdx, meterInfo, keyI
         "action": action,
         "selected_index": selectedIdx,
         "meter_info": meterInfo || null,
-        "key_info": keyInfo || null
+        "key_info": keyInfo || null,
+        "history_excerpt": historyExcerpt || null,
+        "history_validated": !!historyValidated
     }));
 }
 
@@ -211,6 +223,85 @@ function buildEvaluationPayload(curScore, selectionRange) {
         "voice_1": extractSelectionTrack(curScore, trackMap[1], selectionRange),
         "voice_2": extractSelectionTrack(curScore, trackMap[2], selectionRange)
     };
+}
+
+// Build the committed-history payload used before generating a new section.
+function buildGenerationHistoryPayload(curScore, startTick, endTick) {
+    if (!curScore || startTick === undefined || endTick === undefined || endTick <= startTick) {
+        return null;
+    }
+
+    return buildEvaluationPayload(curScore, {
+        "startTick": startTick,
+        "endTick": endTick,
+        "startStaff": 0,
+        "endStaff": curScore.nstaves - 1
+    });
+}
+
+// Measure the tick span covered by one serialized three-voice solution.
+function getSolutionDurationTicks(solution) {
+    if (!solution) {
+        return 0;
+    }
+
+    function voiceTicks(events) {
+        var total = 0;
+        if (!events) {
+            return total;
+        }
+        for (var i = 0; i < events.length; i++) {
+            total += events[i].ticks || 0;
+        }
+        return total;
+    }
+
+    return Math.max(
+        voiceTicks(solution.voice_0),
+        voiceTicks(solution.voice_1),
+        voiceTicks(solution.voice_2)
+    );
+}
+
+// Compare one extracted voice payload against one generated voice payload.
+function voicePayloadMatches(extractedEvents, solutionEvents) {
+    extractedEvents = extractedEvents || [];
+    solutionEvents = solutionEvents || [];
+    if (extractedEvents.length !== solutionEvents.length) {
+        return false;
+    }
+
+    for (var i = 0; i < extractedEvents.length; i++) {
+        var extractedPitch = (extractedEvents[i].pitch === undefined) ? -1 : extractedEvents[i].pitch;
+        var solutionPitch = (solutionEvents[i].pitch === undefined) ? -1 : solutionEvents[i].pitch;
+        if (extractedPitch !== solutionPitch) {
+            return false;
+        }
+        if ((extractedEvents[i].ticks || 0) !== (solutionEvents[i].ticks || 0)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// Check whether the score still matches the currently selected generated section.
+function scoreRangeMatchesSolution(curScore, startTick, solution) {
+    var durationTicks = getSolutionDurationTicks(solution);
+    if (!curScore || !solution || durationTicks <= 0) {
+        return false;
+    }
+
+    var extractedPayload = buildGenerationHistoryPayload(curScore, startTick, startTick + durationTicks);
+    if (!extractedPayload) {
+        return false;
+    }
+
+    return (
+        voicePayloadMatches(extractedPayload.voice_0, solution.voice_0) &&
+        voicePayloadMatches(extractedPayload.voice_1, solution.voice_1) &&
+        voicePayloadMatches(extractedPayload.voice_2, solution.voice_2)
+    );
 }
 
 // Attach score-relative offsets to issues returned by the evaluator.
@@ -260,23 +351,29 @@ function evaluateFugue(curScore, selectionRange, callback) {
     evalXhr.send(JSON.stringify(payload));
 }
 
-// Find the score element that starts at a given tick on a given track.
-function findTrackElementAtTick(curScore, trackNum, tick) {
+// Find the note or rest active at a given tick on a given track.
+function findActiveTrackElementAtTick(curScore, trackNum, tick) {
     var cursor = curScore.newCursor();
     cursor.track = 0;
-    cursor.rewindToTick(tick);
+    cursor.rewind(0);
+    var activeElement = null;
 
-    while (cursor.segment && cursor.tick < tick) {
+    while (cursor.segment && cursor.tick <= tick) {
+        var element = cursor.segment.elementAt(trackNum);
+        if (element && element.duration) {
+            var startTick = cursor.tick;
+            var endTick = startTick + element.duration.ticks;
+            if (startTick <= tick && tick < endTick) {
+                activeElement = element;
+            }
+        }
+
         if (!cursor.next()) {
-            return null;
+            break;
         }
     }
 
-    if (!cursor.segment || cursor.tick !== tick) {
-        return null;
-    }
-
-    return cursor.segment.elementAt(trackNum);
+    return activeElement;
 }
 
 // Check whether a score element is a sounding note/chord rather than a rest.
@@ -301,7 +398,7 @@ function issueMatchesScoreVoices(curScore, issue) {
             return false;
         }
 
-        var element = findTrackElementAtTick(curScore, trackNum, absoluteTick);
+        var element = findActiveTrackElementAtTick(curScore, trackNum, absoluteTick);
         if (!isSoundingElement(element)) {
             return false;
         }

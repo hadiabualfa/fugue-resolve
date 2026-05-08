@@ -25,6 +25,10 @@ MuseScore {
     property var evaluationIssues: []
     property int currentIssueIndex: 0
     property var evaluationRange: null
+    property int compositionStartTick: -1
+    property var lastCommittedSolution: null
+    property int lastCommittedTick: -1
+    property bool currentSectionEdited: false
 
     ColumnLayout {
         anchors.fill: parent
@@ -112,7 +116,7 @@ MuseScore {
                     if (generatedSolutions.length === 0) return;
                     if (currentSolutionIndex >= generatedSolutions.length - 1) {
                         nextSolBtn.text = "..."
-                        Bridge.nextMeasure([], "auto", "next", currentSolutionIndex, null, null, function(solution, nextState, durationMultiplier, errorMsg) {
+                        Bridge.nextMeasure([], "auto", "next", currentSolutionIndex, null, null, null, false, function(solution, nextState, durationMultiplier, errorMsg) {
                             if (solution) {
                                 var temp = generatedSolutions.slice();
                                 temp.push(solution);
@@ -168,15 +172,28 @@ MuseScore {
                 text: "Reset"
                 Layout.minimumWidth: 80
                 onClicked: {
-                    Bridge.nextMeasure([], "reset", "new", 0, null, null, function() {
+                    Bridge.nextMeasure([], "reset", "new", 0, null, null, null, false, function() {
                         currentSection = "INITIAL";
                         generatedSolutions = [];
                         currentSolutionIndex = 0;
                         targetPasteTick = 0;
                         currentDurationMultiplier = 1;
+                        compositionStartTick = -1;
+                        lastCommittedSolution = null;
+                        lastCommittedTick = -1;
+                        currentSectionEdited = false;
                         resetEvaluationMode("Generator reset successfully. Highlight your subject and start again.");
                     });
                 }
+            }
+        }
+
+        RowLayout {
+            visible: interactionMode === "generate" && lastCommittedSolution !== null && lastCommittedTick >= 0
+            Button {
+                text: "Restore Last Section"
+                Layout.fillWidth: true
+                onClicked: restoreLastCommittedSection()
             }
         }
 
@@ -197,34 +214,9 @@ MuseScore {
         }
     }
 
-    // Trigger generation for the current fugue section and paste the best result.
-    function triggerGeneration(decision) {
-        if (btnState === "solving") return; 
-        resetEvaluationMode();
-        
-        var subjectData = [];
-        var meterInfo = null;
-        var keyInfo = null;
-        var oldPasteTick = targetPasteTick;
-        
-        if (currentSection === "INITIAL") {
-            var cursor = curScore.newCursor();
-            cursor.rewind(2);
-            targetPasteTick = cursor.tick;
-            cursor.rewind(1);
-            subjectDurationTicks = targetPasteTick - cursor.tick;
-            subjectData = Bridge.extractSubject(cursor);
-            meterInfo = Bridge.getSelectionMeterInfo(curScore);
-            keyInfo = Bridge.getSelectionKeyInfo(curScore);
-            currentDurationMultiplier = 1; 
-        } else {
-            targetPasteTick += (subjectDurationTicks * currentDurationMultiplier); 
-        }
-        
-        btnState = "solving"; 
-        evaluationFeedback = "Generating...";
-        
-        Bridge.nextMeasure(subjectData, decision, "new", currentSolutionIndex, meterInfo, keyInfo, function(solution, nextState, durationMultiplier, errorMsg) {
+    // Request the next generated section from the Python server.
+    function requestGeneration(subjectData, decision, meterInfo, keyInfo, historyExcerpt, historyValidated, oldPasteTick) {
+        Bridge.nextMeasure(subjectData, decision, "new", currentSolutionIndex, meterInfo, keyInfo, historyExcerpt, historyValidated, function(solution, nextState, durationMultiplier, errorMsg) {
             if (!solution) {
                 targetPasteTick = oldPasteTick;
                 evaluationFeedback = errorMsg ? "Error: " + errorMsg : "Error: Generation failed.";
@@ -241,6 +233,117 @@ MuseScore {
         });
     }
 
+    // Format a short multi-line generation error block for the plugin textbox.
+    function formatGenerationError(title, details) {
+        if (!details || details.length === 0) {
+            return title;
+        }
+
+        var lines = [title];
+        for (var i = 0; i < details.length; i++) {
+            lines.push("- " + details[i]);
+        }
+        return lines.join("\n");
+    }
+
+    // Validate the edited current section with the same evaluator flow before continuing generation.
+    function validateEditedHistoryAndGenerate(decision, subjectData, meterInfo, keyInfo, historyExcerpt, oldPasteTick) {
+        var sectionStartTick = lastCommittedTick >= 0 ? lastCommittedTick : compositionStartTick;
+        var historyRange = {
+            "startTick": sectionStartTick,
+            "endTick": targetPasteTick,
+            "startStaff": 0,
+            "endStaff": curScore.nstaves - 1
+        };
+
+        Bridge.evaluateFugue(curScore, historyRange, function(issues, mistakes, errorMsg) {
+            if (errorMsg) {
+                targetPasteTick = oldPasteTick;
+                evaluationFeedback = errorMsg;
+                btnState = "ready";
+                return;
+            }
+
+            if (issues && issues.length > 0) {
+                targetPasteTick = oldPasteTick;
+                var lines = [];
+                for (var i = 0; i < issues.length && i < 3; i++) {
+                    lines.push(issues[i].location + ": " + issues[i].summary);
+                }
+                evaluationFeedback = formatGenerationError(
+                    "Edited fugue introduces counterpoint issues. Use Evaluate or Restore Last Section before continuing:",
+                    lines
+                );
+                btnState = "ready";
+                return;
+            }
+
+            requestGeneration(subjectData, decision, meterInfo, keyInfo, historyExcerpt, true, oldPasteTick);
+        });
+    }
+
+    // Trigger generation for the current fugue section and paste the best result.
+    function triggerGeneration(decision) {
+        if (btnState === "solving") return; 
+        resetEvaluationMode(undefined, undefined, currentSection !== "INITIAL");
+        
+        var subjectData = [];
+        var meterInfo = null;
+        var keyInfo = null;
+        var historyExcerpt = null;
+        var oldPasteTick = targetPasteTick;
+        
+        if (currentSection === "INITIAL") {
+            var selectionRange = Bridge.getSelectionRange(curScore);
+            if (!selectionRange) {
+                evaluationFeedback = "Highlight your subject before generating.";
+                return;
+            }
+            lastCommittedSolution = null;
+            lastCommittedTick = -1;
+            currentSectionEdited = false;
+            var cursor = curScore.newCursor();
+            targetPasteTick = selectionRange.endTick;
+            subjectDurationTicks = selectionRange.endTick - selectionRange.startTick;
+            compositionStartTick = selectionRange.startTick;
+            cursor.rewind(1);
+            subjectData = Bridge.extractSubject(cursor);
+            meterInfo = Bridge.getSelectionMeterInfo(curScore);
+            keyInfo = Bridge.getSelectionKeyInfo(curScore);
+            currentDurationMultiplier = 1; 
+        } else {
+            if (generatedSolutions.length > 0) {
+                lastCommittedSolution = generatedSolutions[currentSolutionIndex];
+                lastCommittedTick = targetPasteTick;
+                currentSectionEdited = !Bridge.scoreRangeMatchesSolution(
+                    curScore,
+                    targetPasteTick,
+                    lastCommittedSolution
+                );
+            } else {
+                currentSectionEdited = false;
+            }
+            if (currentSectionEdited) {
+                historyExcerpt = Bridge.buildGenerationHistoryPayload(
+                    curScore,
+                    compositionStartTick,
+                    targetPasteTick + (subjectDurationTicks * currentDurationMultiplier)
+                );
+            }
+            targetPasteTick += (subjectDurationTicks * currentDurationMultiplier); 
+        }
+        
+        btnState = "solving"; 
+        evaluationFeedback = "Generating...";
+
+        if (currentSectionEdited && historyExcerpt) {
+            validateEditedHistoryAndGenerate(decision, subjectData, meterInfo, keyInfo, historyExcerpt, oldPasteTick);
+            return;
+        }
+
+        requestGeneration(subjectData, decision, meterInfo, keyInfo, historyExcerpt, false, oldPasteTick);
+    }
+
     // Paste the currently selected generated solution into the score.
     function pasteCurrentSolution() {
         if (generatedSolutions.length > 0) {
@@ -252,7 +355,25 @@ MuseScore {
                 curScore, 
                 targetPasteTick
             );
+            currentSectionEdited = false;
         }
+    }
+
+    // Restore the most recently committed generated section after a failed edit.
+    function restoreLastCommittedSection() {
+        if (!lastCommittedSolution || lastCommittedTick < 0) {
+            return;
+        }
+
+        Bridge.writeNotesToScore(
+            lastCommittedSolution.voice_0,
+            lastCommittedSolution.voice_1,
+            lastCommittedSolution.voice_2,
+            curScore,
+            lastCommittedTick
+        );
+        currentSectionEdited = false;
+        evaluationFeedback = "Restored the last generated section.";
     }
 
     // Describe the currently selected evaluation issue.
@@ -279,7 +400,7 @@ MuseScore {
     }
 
     // Exit evaluation mode and optionally show a status message.
-    function resetEvaluationMode(message, range) {
+    function resetEvaluationMode(message, range, clearSelection) {
         interactionMode = "generate";
         evaluationIssues = [];
         currentIssueIndex = 0;
