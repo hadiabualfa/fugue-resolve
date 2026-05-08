@@ -32,8 +32,10 @@ Clone or download this repository to a local folder:
 
 ```bash
 git clone https://github.com/hadiabualfa/fugue-resolve
+git clone https://github.com/hadiabualfa/fugue-resolve
 ```
 
+Open the repository in a code editor.
 Open the repository in a code editor.
 
 ## 2. Create a Python Environment
@@ -57,12 +59,18 @@ pip install -r requirements.txt
 ## 4. Install the Plugin in MuseScore
 
 Copy just the `FugueResolve.qml` and `bridge.js` files to a separate folder inside the MuseScore Plugins folder. Alternatively, place the whole repository inside the MuseScore Plugins folder and proceed from there.
+Copy just the `FugueResolve.qml` and `bridge.js` files to a separate folder inside the MuseScore Plugins folder. Alternatively, place the whole repository inside the MuseScore Plugins folder and proceed from there.
 
 Important:
 
 - `FugueResolve.qml` and `bridge.js` must stay in the same folder
 - `main.py`, `fugue_solver.py`, and `fugue_state.py` must stay together wherever you launch the Python server
 
+Once the above is complete:
+
+1. Restart MuseScore.
+2. Open `Plugins > Plugin Manager`.
+3. Enable `FugueResolve`.
 Once the above is complete:
 
 1. Restart MuseScore.
@@ -78,9 +86,11 @@ Plugins > FugueResolve
 ## 5. Start the Python Server
 
 From the project root, activate the environment if needed and run `main.py`:
+From the project root, activate the environment if needed and run `main.py`:
 
 ```bash
 source .venv/bin/activate
+python3 main.py
 python3 main.py
 ```
 
@@ -90,6 +100,7 @@ This starts the local Flask server on:
 http://127.0.0.1:5000
 ```
 
+Keep this terminal open while using the plugin. The MuseScore-to-Python bridge sends requests to:
 Keep this terminal open while using the plugin. The MuseScore-to-Python bridge sends requests to:
 
 - `POST /generate`
@@ -117,12 +128,16 @@ If you change the server host or port, update the URLs in `bridge.js`.
 Notes:
 
 - Writing a highly complicated subject or breaking voice-leading rules may cause the generation constraints to become unsatisfiable.
+- Writing a highly complicated subject or breaking voice-leading rules may cause the generation constraints to become unsatisfiable.
 - The plugin writes generated material directly into the score.
+- The server keeps track of an internal state, so generation is intended to proceed section by section. Thus, the subject does not need to remain highlighted so that edits can be made along the way.
+- `Reset` clears the internal state and returns the UI to its initial state.
 - The server keeps track of an internal state, so generation is intended to proceed section by section. Thus, the subject does not need to remain highlighted so that edits can be made along the way.
 - `Reset` clears the internal state and returns the UI to its initial state.
 
 ### Evaluation Mode
 
+1. Highlight the entire fugue that you want to inspect.
 1. Highlight the entire fugue that you want to inspect.
 2. Click `Evaluate`.
 3. The plugin switches into evaluation mode:
@@ -130,7 +145,14 @@ Notes:
    - It describes each issue in the plugin window
 4. Use `Next` and `Prev` to move through the issues.
 5. Edit the score to address those issues.
+3. The plugin switches into evaluation mode:
+   - It highlights issues one-by-one in the score
+   - It describes each issue in the plugin window
+4. Use `Next` and `Prev` to move through the issues.
+5. Edit the score to address those issues.
 6. Click `Re-run Evaluate` to refresh the issue list.
+7. Repeat this process until no issues are reported.
+8. Click `Reset` at any time to leave evaluation mode and return to generation mode.
 7. Repeat this process until no issues are reported.
 8. Click `Reset` at any time to leave evaluation mode and return to generation mode.
 
