@@ -11,7 +11,7 @@ UPPER_VOICE_PARALLEL_INTERVALS = {5}
 UPPER_VOICE_CONSONANCES = {0, 3, 4, 5, 7, 8, 9}
 BASS_CONSONANCES = {0, 3, 4, 7, 8, 9}
 
-# Copy a music21 stream note-for-note into a fresh stream.
+# Copy a music21 stream into a fresh stream
 def clone_stream(m21_stream):
     new_stream = stream.Stream()
     if not m21_stream:
@@ -25,7 +25,7 @@ def clone_stream(m21_stream):
 
     return new_stream
 
-# Concatenate several streams into one continuous stream.
+# Concatenate several streams into one continuous stream
 def concatenate_streams(m21_streams):
     new_stream = stream.Stream()
     for m21_stream in m21_streams:
@@ -33,19 +33,19 @@ def concatenate_streams(m21_streams):
             new_stream.append(n)
     return new_stream
 
-# Create a single rest stream spanning a given number of 16ths.
+# Create a rest stream spanning a given number of 16ths
 def make_rest_stream(total_16ths):
     rest_stream = stream.Stream()
     rest_stream.append(note.Rest(quarterLength=total_16ths * 0.25))
     return rest_stream
 
-# Measure a stream's total duration in 16th-note units.
+# Measure a stream's duration in 16th notes
 def get_stream_length_16ths(m21_stream):
     if not m21_stream:
         return 0
     return sum(int(n.quarterLength / 0.25) for n in m21_stream.flatten().notesAndRests)
 
-# Expand a stream into a per-16th pitch grid for vertical checks.
+# Expand a stream into a 16th-note pitch grid
 def _stream_to_pitch_grid(m21_stream, total_16ths):
     grid = [-1] * total_16ths
     if not m21_stream:
@@ -62,7 +62,7 @@ def _stream_to_pitch_grid(m21_stream, total_16ths):
 
     return grid
 
-# Normalize meter settings into beat and measure lengths in 16ths.
+# Normalize meter settings into beat and measure lengths in 16th notes
 def _build_meter_info(meter_info=None):
     meter_info = meter_info or {}
     numerator = max(1, int(meter_info.get("numerator", 4)))
@@ -76,7 +76,7 @@ def _build_meter_info(meter_info=None):
         "measure_16ths": measure_16ths,
     }
 
-# Convert a 16th-note offset into user-facing measure and beat text.
+# Convert a 16th-note offset into user-facing measure and beat text
 def _format_location(offset_16ths, meter_info=None):
     meter = _build_meter_info(meter_info)
     measure = (offset_16ths // meter["measure_16ths"]) + 1
@@ -85,21 +85,21 @@ def _format_location(offset_16ths, meter_info=None):
     beat_text = str(int(beat)) if beat.is_integer() else f"{beat:.2f}".rstrip("0").rstrip(".")
     return f"Measure {measure}, beat {beat_text}"
 
-# Check whether an interval is consonant for the given voice pair.
+# Check whether a given interval is consonant
 def _is_strong_beat_consonance(interval, voice_a, voice_b):
     if 2 in (voice_a, voice_b):
         return interval in BASS_CONSONANCES
     return interval in UPPER_VOICE_CONSONANCES
 
-# Check whether two melodic motions move in the same direction.
+# Check for similar motion across two melodies
 def _same_direction(motion_a, motion_b):
     return motion_a != 0 and motion_b != 0 and ((motion_a > 0 and motion_b > 0) or (motion_a < 0 and motion_b < 0))
 
-# Check whether a voice pair forms a discouraged upper-voice parallel interval.
+# Check for forbidden parallel motion
 def _is_upper_voice_parallel_interval(interval, voice_a, voice_b):
     return {voice_a, voice_b} == {0, 1} and interval in UPPER_VOICE_PARALLEL_INTERVALS
 
-# Convert a stream into note/rest events with explicit spans.
+# Convert a stream into note- and rest-events
 def _stream_to_events(m21_stream):
     events = []
     if not m21_stream:
@@ -121,21 +121,21 @@ def _stream_to_events(m21_stream):
 
     return events
 
-# Find the event active at a given 16th-note offset.
+# Find the event active at a given 16th-note offset
 def _active_event_at(events, offset_16ths):
     for event in events:
         if event["start"] <= offset_16ths < event["end"]:
             return event
     return None
 
-# Find the index of the event active at a given 16th-note offset.
+# Find the index of the event active at a given 16th-note offset
 def _active_event_index(events, offset_16ths):
     for index, event in enumerate(events):
         if event["start"] <= offset_16ths < event["end"]:
             return index
     return None
 
-# Allow passing-style weak-beat dissonances when the surrounding events support them.
+# Allow passing-style weak-beat dissonances when the surrounding events support them
 def _is_weak_dissonance_allowed(moving_events, fixed_grid, offset_16ths):
     active_index = _active_event_index(moving_events, offset_16ths)
     if active_index is None:
@@ -190,7 +190,7 @@ def _is_weak_dissonance_allowed(moving_events, fixed_grid, offset_16ths):
 
     return _same_direction(motion_in, motion_out) or prev_pitch == next_pitch
 
-# Build note references for every sounding voice at a given offset.
+# Build note references for every voice at a given offset
 def _note_refs_for_offset(events_by_voice, voice_ids, offset_16ths):
     refs = []
     for voice_id in voice_ids:
@@ -204,7 +204,7 @@ def _note_refs_for_offset(events_by_voice, voice_ids, offset_16ths):
             })
     return refs
 
-# Produce structured counterpoint issues for the evaluator UI.
+# Build structured issue reports for the evaluator UI
 def evaluate_counterpoint_issues(voice_streams, meter_info=None):
     meter = _build_meter_info(meter_info)
     total_16ths = max((get_stream_length_16ths(m21_stream) for m21_stream in voice_streams.values()), default=0)
@@ -222,7 +222,7 @@ def evaluate_counterpoint_issues(voice_streams, meter_info=None):
 
     note_change_offsets = {0}
     onset_offsets = set()
-    for voice_id, events in events_by_voice.items():
+    for _, events in events_by_voice.items():
         for event in events:
             note_change_offsets.add(event["start"])
             if not event["isRest"]:
@@ -235,7 +235,6 @@ def evaluate_counterpoint_issues(voice_streams, meter_info=None):
     issues = []
     last_offset_by_key = {}
 
-    # Append a deduplicated structured issue for evaluator output.
     def add_issue(issue_id, voice_ids, offset_16ths, summary):
         if last_offset_by_key.get(issue_id, -99) >= offset_16ths - 1:
             return
@@ -333,7 +332,7 @@ def evaluate_counterpoint_issues(voice_streams, meter_info=None):
 
     return issues
 
-# Produce per-voice textual issue lists for generation-time validation.
+# Build textual issue lists for each voice for generation mode
 def analyze_voice_streams(voice_streams, check_weak_dissonances=True, meter_info=None, return_events=False):
     issues = {voice_id: [] for voice_id in voice_streams}
     seen = {voice_id: set() for voice_id in voice_streams}
@@ -354,7 +353,6 @@ def analyze_voice_streams(voice_streams, check_weak_dissonances=True, meter_info
     issue_events = []
     event_seen = set()
 
-    # Append a deduplicated textual issue to each affected voice.
     def add_issue(voice_ids, message, offset):
         if message not in event_seen:
             issue_events.append({
@@ -453,13 +451,12 @@ def analyze_voice_streams(voice_streams, check_weak_dissonances=True, meter_info
 
     return issues
 
-# Return the major-scale pitch classes for a tonic pitch class.
+# Return the major-scale pitch classes for a given tonic
 def _major_scale_pitch_classes(tonic_pc):
     return [((tonic_pc + step) % 12) for step in (0, 2, 4, 5, 7, 9, 11)]
 
-# Solve one generated fugue line under the current rhythmic and contrapuntal rules.
 class FugueSolver(object):
-    # Initialize the Z3 model, note budget, and fixed musical context for one solve.
+    # Initialize the Z3 model, note budget, and fixed fugue context
     def __init__(self, existing_streams, target_notes=None, prev_gen_pitch=None, prev_ext_pitches=None, strict_invertible=False, voice_id=0, target_chord=None, allowed_durations=None, locked_prefix=None, tonic_pc=0, meter_info=None, fixed_voice_ids=None):
         self.s = Solver()
         self.s.set("timeout", 10000)
@@ -501,7 +498,7 @@ class FugueSolver(object):
         self.new_durations = [Int(f'new_d_{i}') for i in range(self.max_notes)]
         self.new_offsets = [Int(f'new_off_{i}') for i in range(self.max_notes)]
 
-    # Apply the full rule set needed for the current generation attempt.
+    # Apply the constraints needed for the current generation attempt
     def setup_rules(self):
         self.apply_rhythm_rules()
         self.apply_locked_prefix_rules()
@@ -514,7 +511,7 @@ class FugueSolver(object):
         if self.strict_invertible:
             self.apply_invertible_rules()
 
-    # Constrain durations, offsets, and bar-sensitive rhythmic placement.
+    # Constrain durations, offsets, and bar-sensitive rhythm
     def apply_rhythm_rules(self):
         self.s.add(self.new_offsets[0] == 0)
         
@@ -545,7 +542,7 @@ class FugueSolver(object):
 
         self.s.add(Sum(self.new_durations) == self.total_16ths)
 
-    # Lock the opening notes when a false-entry prefix is required.
+    # Lock the subject notes for a middle-entry
     def apply_locked_prefix_rules(self):
         if not self.locked_prefix:
             return
@@ -556,7 +553,7 @@ class FugueSolver(object):
             self.s.add(self.new_durations[i] == duration)
             self.s.add(self.new_pitches[i] == pitch)
 
-    # Constrain register, leaps, and basic melodic recovery behavior.
+    # Constrain register, leaps, and voice-leading
     def apply_melodic_rules(self):
         for i in range(self.max_notes):
             p = self.new_pitches[i]
@@ -602,7 +599,7 @@ class FugueSolver(object):
                 self.s.add(Implies(And(all_three, int1 > 4), And(int2 <= 0, int2 >= -4)))
                 self.s.add(Implies(And(all_three, int1 < -4), And(int2 >= 0, int2 <= 4)))
 
-    # Enforce consonant strong-beat relations against the fixed voices.
+    # Enforce consonant strong-beat relations against the fixed voices
     def apply_counterpoint_rules(self):
         for ext_stream in self.existing_streams:
             fixed_data = [] 
@@ -629,7 +626,7 @@ class FugueSolver(object):
                                       interval == 5, interval == 7, interval == 8, interval == 9)
                     self.s.add(Implies(And(is_active, overlap, is_strong_beat), is_consonant))
 
-    # Ban parallel perfect intervals against the fixed voices.
+    # Forbid parallel perfect intervals against the fixed voices
     def apply_parallel_rules(self):
         for ext_index, ext_stream in enumerate(self.existing_streams):
             fixed_voice_id = self.fixed_voice_ids[ext_index] if ext_index < len(self.fixed_voice_ids) else None
@@ -669,7 +666,7 @@ class FugueSolver(object):
 
                     self.s.add(Implies(And(both_sound, simultaneous_motion), Not(Or(*blocked_intervals))))
 
-    # Restrict generated pitches to the diatonic white-note collection.
+    # Restrict generated pitches to the tonic pitch classes
     def apply_diatonic_scale_rule(self):
         scale_pcs = _major_scale_pitch_classes(self.tonic_pc)
         for i in range(self.max_notes):
@@ -679,7 +676,7 @@ class FugueSolver(object):
             in_scale = Or(*[pc == scale_pc for scale_pc in scale_pcs])
             self.s.add(Implies(is_active, in_scale))
 
-    # Require the opening harmony to fit the target harmonic area.
+    # Require the opening harmony to fit the tonic harmonic area
     def apply_harmony_rules(self):
         if not self.target_chord: return
         
@@ -704,7 +701,7 @@ class FugueSolver(object):
                 pc == chord_pcs[2]
             )))
 
-    # Ban the generated voice from crossing the already-fixed voices.
+    # Forbid the generated voice from crossing the fixed voices
     def apply_voice_crossing_rules(self):
         for ext_stream in self.existing_streams:
             fixed_data = [] 
@@ -732,12 +729,11 @@ class FugueSolver(object):
                     elif self.voice_id == 2: 
                         self.s.add(Implies(And(is_active, overlap), n_p < f_p))
 
-    # Reserve a hook for stricter invertible-counterpoint constraints.
     def apply_invertible_rules(self):
         if not self.strict_invertible: return
         pass
 
-    # Re-check a finished stream against the solver's core rule groups.
+    # Re-check a finished stream against the solver's core constraints
     def check_for_mistakes(self, stream_to_check):
         mistakes = []
         notes = list(stream_to_check.flatten().notesAndRests)
@@ -774,7 +770,7 @@ class FugueSolver(object):
         
         return mistakes
 
-    # Return the next satisfiable stream and block that exact model afterward.
+    # Return the next satisfiable stream
     def generate_next_solution(self):
         if self.s.check() == sat:
             model = self.s.model()
@@ -799,7 +795,7 @@ class FugueSolver(object):
             return new_stream
         return None
 
-# Transpose a stream by a fixed number of semitones.
+# Transpose a stream by a given number of semitones
 def transpose_stream(m21_stream, semitones):
     if not m21_stream:
         return stream.Stream()

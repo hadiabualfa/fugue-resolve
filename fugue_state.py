@@ -1,6 +1,5 @@
-# Track fugue form state, stored motives, and section-to-section routing.
 class FugueBlueprint:
-    # Initialize the fugue form state, stored motives, and running counters.
+    # Initialize the fugue form state, motive cache, and running counters
     def __init__(self):
         self.state = 'INITIAL' 
         self.motives = {
@@ -22,7 +21,7 @@ class FugueBlueprint:
         
         self.current_harmony = 'I'
 
-    # Advance the fugue state machine and return role instructions for the next section.
+    # Advance the state machine and return role instructions for the next section
     def advance(self, decision='auto'):
         if self.state == 'INITIAL':
             self.state = 'EXPO_2'
@@ -69,7 +68,7 @@ class FugueBlueprint:
                 
         return {0: 'free_melody', 1: 'free_melody', 2: 'free_melody'}
 
-    # Build the three-voice role layout for the next middle entry.
+    # Build the three-voice role layout for the next middle entry
     def _get_middle_entry_instructions(self):
         self.middle_entry_count += 1
         support_role = 'episode_line' if self.episode_count > 0 else 'cs2'
@@ -89,7 +88,7 @@ class FugueBlueprint:
         else:
             return {0: support_role, 1: 'free_melody', 2: 'subject'}
 
-    # Build the three-voice role layout for the next episode.
+    # Build the three-voice role layout for the next episode
     def _get_episode_instructions(self, previous_state):
         self.episode_count += 1
         if previous_state in ['EXPO_3', 'MIDDLE_ENTRY']:

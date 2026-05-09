@@ -48,7 +48,7 @@ EPISODE_PLAN_TEMPLATES = [
 ]
 
 # --- HELPERS ---
-# Build an empty three-voice stream bundle for runtime state.
+# Build an empty three-voice stream
 def make_empty_voice_streams():
     return {voice_id: stream.Stream() for voice_id in VOICE_IDS}
 
@@ -72,7 +72,7 @@ VOICE_CENTERS = {
     2: 48,
 }
 
-# Return the last sounding pitch in a stream, or -1 if none exists.
+# Return the last sounding pitch in a stream, or -1 if none exists
 def get_last_pitch(m21_stream):
     if not m21_stream: return -1
     notes = list(m21_stream.flatten().notesAndRests)
@@ -80,27 +80,27 @@ def get_last_pitch(m21_stream):
         if not n.isRest: return n.pitch.midi
     return -1
 
-# Normalize incoming key data to a supported key-signature accidentals count.
+# Normalize incoming key data to an accidentals count
 def normalize_key_info(key_info=None):
     key_info = key_info or {}
     accidentals = int(key_info.get('accidentals', DEFAULT_KEY_INFO['accidentals']))
     return {"accidentals": max(-7, min(7, accidentals))}
 
-# Infer a tonic pitch class from the first sounding note of the subject.
+# Infer a tonic pitch class from the first note of the subject
 def infer_subject_tonic_pc(subject_stream):
     first_pitch = get_first_pitch(subject_stream)
     return 0 if first_pitch == -1 else first_pitch % 12
 
-# Read the active tonic pitch class from runtime state.
+# Read the active tonic pitch class from current state
 def get_tonic_pc():
     return int(global_state.get('tonic_pc', 0)) % 12
 
-# Return the major-scale pitch classes for the active fugue key.
+# Return the major-scale pitch classes for the active fugue key
 def get_scale_pitch_classes(tonic_pc=None):
     tonic_pc = get_tonic_pc() if tonic_pc is None else (tonic_pc % 12)
     return tuple((tonic_pc + step) % 12 for step in MAJOR_SCALE_STEPS)
 
-# Return the tonic, subdominant, or dominant triad pitch classes for the active key.
+# Return the tonic, subdominant, or dominant triad pitch classes for the active key
 def get_harmony_pitch_classes(harmony_name, tonic_pc=None):
     tonic_pc = get_tonic_pc() if tonic_pc is None else (tonic_pc % 12)
     if harmony_name == 'I':
@@ -113,7 +113,7 @@ def get_harmony_pitch_classes(harmony_name, tonic_pc=None):
         return []
     return [((tonic_pc + offset) % 12) for offset in offsets]
 
-# Build an ordered ladder of in-key pitches across several octaves.
+# Build an ordered ladder of in-key pitches
 def get_scale_pitch_ladder(tonic_pc=None, low=-24, high=151):
     tonic_pc = get_tonic_pc() if tonic_pc is None else (tonic_pc % 12)
     ladder = []
@@ -125,7 +125,7 @@ def get_scale_pitch_ladder(tonic_pc=None, low=-24, high=151):
                 ladder.append(pitch)
     return sorted(set(ladder))
 
-# Score a full three-voice candidate using high-level musical heuristics.
+# Heuristic scoring for a single instance
 def score_solution(voice_streams, blueprint):
     score = 0
     depth = blueprint.episode_count + blueprint.middle_entry_count
@@ -181,7 +181,7 @@ def score_solution(voice_streams, blueprint):
 
     return score
 
-# Reset the blueprint and all cached generation state.
+# Reset the blueprint and all cached generation in the state
 def reset_runtime():
     global blueprint
     blueprint = FugueBlueprint()
@@ -197,7 +197,7 @@ def reset_runtime():
     global_state.pop('active_voice_id', None)
     global_state.pop('anchor_pitch', None)
 
-# Normalize incoming meter data to a safe numerator/denominator pair.
+# Normalize incoming time signature data to a numerator/denominator pair
 def normalize_meter_info(meter_info=None):
     meter_info = meter_info or {}
     return {
@@ -205,7 +205,7 @@ def normalize_meter_info(meter_info=None):
         "denominator": max(1, int(meter_info.get('denominator', DEFAULT_METER_INFO['denominator']))),
     }
 
-# Convert a per-voice issue map into short display summaries.
+# Convert a per-voice issue map into short display summaries
 def summarize_issues(issue_map):
     summaries = []
     for voice_id in sorted(issue_map):
@@ -213,18 +213,18 @@ def summarize_issues(issue_map):
             summaries.append(f"{VOICE_NAMES[voice_id]}: {'; '.join(issue_map[voice_id][:3])}")
     return summaries
 
-# Format a generation failure message as a short bulleted block for the plugin UI.
+# Format a generation failure message for the plugin UI
 def format_generation_message(title, details=None):
     details = details or []
     if not details:
         return title
     return "\n".join([title] + [f"- {detail}" for detail in details])
 
-# Read the currently active meter information from runtime state.
+# Read the active time signature information from the current state
 def get_meter_info():
     return normalize_meter_info(global_state.get('meter_info'))
 
-# Strip measure and beat text from an issue string for grouped reporting.
+# Strip measure and beat text from an issue string for grouped reporting
 def strip_issue_location(message):
     for marker in [" at m.", " near m."]:
         index = message.find(marker)
@@ -232,7 +232,7 @@ def strip_issue_location(message):
             return message[:index].rstrip(".")
     return message.rstrip(".")
 
-# Group structured issue events into a compact textual report.
+# Group structured issue events into a compact report text
 def format_issue_report(issue_events):
     if not issue_events:
         return ["No mistakes found!"]
@@ -250,7 +250,7 @@ def format_issue_report(issue_events):
         lines.append(f"{location}: {'; '.join(details)}")
     return lines
 
-# Choose a note budget for the next solve based on subject length and rhythm.
+# Choose a note budget for the next solve based on subject length and rhythm
 def get_note_budget(state_name):
     subject_stream = blueprint.motives.get('subject')
     if not subject_stream:
@@ -261,7 +261,7 @@ def get_note_budget(state_name):
     total_16ths = max(1, get_stream_length_16ths(subject_stream))
     return max(1, total_16ths // shortest_allowed)
 
-# Extract the distinct note lengths used by the stored subject.
+# Extract the note lengths used by the subject
 def get_subject_durations():
     subject_stream = blueprint.motives.get('subject')
     if not subject_stream:
@@ -274,11 +274,11 @@ def get_subject_durations():
     })
     return durations or [2, 4]
 
-# Detect whether the current subject mixes multiple rhythmic values.
+# Detect whether the subject mixes multiple rhythmic values
 def subject_has_mixed_rhythm():
     return len(get_subject_durations()) > 1
 
-# Limit allowed durations for a state based on the subject's rhythm profile.
+# Limit allowed note lengths for a measure based on the subject's rhythm
 def get_allowed_durations(state_name):
     subject_durations = get_subject_durations()
     shortest_subject = min(subject_durations) if subject_durations else 2
@@ -290,11 +290,11 @@ def get_allowed_durations(state_name):
 
     return [value for value in ALL_DURATIONS if value >= shortest_allowed]
 
-# Return the sounding MIDI pitches from a stream.
+# Return the MIDI pitches from a stream
 def get_pitch_list(m21_stream):
     return [n.pitch.midi for n in m21_stream.flatten().notesAndRests if not n.isRest]
 
-# Return the first sounding pitch in a stream, or -1 if none exists.
+# Return the first pitch in a stream, or -1 if none exists (i.e. it is a rest)
 def get_first_pitch(m21_stream):
     if not m21_stream:
         return -1
@@ -304,14 +304,14 @@ def get_first_pitch(m21_stream):
             return n.pitch.midi
     return -1
 
-# Deep-copy a dictionary of per-voice streams.
+# Deep-copy the dictionary of per-voice streams
 def copy_voice_streams(voice_streams):
     return {
         voice_id: clone_stream(m21_stream)
         for voice_id, m21_stream in voice_streams.items()
     }
 
-# Build a hashable signature for a full three-voice texture.
+# Build a hashable tuple for a full three-voice texture
 def voice_streams_signature(voice_streams):
     return tuple(
         (
@@ -321,7 +321,7 @@ def voice_streams_signature(voice_streams):
         for voice_id in VOICE_IDS
     )
 
-# Package a generated stream, rendered voices, and score into one candidate record.
+# Pack a generated stream, rendered voices, and score into one candidate record
 def build_candidate_entry(generated_stream, voice_streams, score, episode_plan=None):
     return {
         "generated_stream": clone_stream(generated_stream),
@@ -330,7 +330,7 @@ def build_candidate_entry(generated_stream, voice_streams, score, episode_plan=N
         "episode_plan": copy.deepcopy(episode_plan),
     }
 
-# Deep-copy one committed section entry.
+# Deep-copy one committed section entry
 def copy_section_entry(section_entry):
     return {
         "state_name": section_entry["state_name"],
@@ -342,15 +342,15 @@ def copy_section_entry(section_entry):
         "voice_streams": copy_voice_streams(section_entry["voice_streams"]),
     }
 
-# Deep-copy the committed section history.
+# Deep-copy the committed section history
 def copy_section_history(section_history):
     return [copy_section_entry(entry) for entry in section_history]
 
-# Return a stable signature for one candidate record.
+# Return the voice streams for one candidate record
 def candidate_signature(candidate):
     return voice_streams_signature(candidate.get("voice_streams", {}))
 
-# Deep-copy a list of candidate records.
+# Deep-copy a list of candidate records
 def copy_candidate_entries(candidates):
     return [
         build_candidate_entry(
@@ -362,7 +362,7 @@ def copy_candidate_entries(candidates):
         for candidate in candidates
     ]
 
-# Snapshot the mutable runtime state before a risky generation step.
+# Save the current state before a risky generation step
 def snapshot_runtime_state():
     return {
         'generated_streams': copy_candidate_entries(global_state.get('generated_streams', [])),
@@ -378,7 +378,7 @@ def snapshot_runtime_state():
         'anchor_pitch': global_state.get('anchor_pitch'),
     }
 
-# Restore a previously saved runtime snapshot after a failed generation step.
+# Restore a previously saved state after a failed generation step
 def restore_runtime_state(state_snapshot):
     global_state['generated_streams'] = copy_candidate_entries(state_snapshot['generated_streams'])
     global_state['last_voice_streams'] = state_snapshot['last_voice_streams']
@@ -395,7 +395,7 @@ def restore_runtime_state(state_snapshot):
         else:
             global_state[key] = value
 
-# Append newly rendered material onto committed voice-history streams.
+# Append newly rendered material onto previous voice-history streams
 def extend_voice_streams(base_voice_streams, new_voice_streams):
     return {
         voice_id: concatenate_streams([
@@ -405,7 +405,7 @@ def extend_voice_streams(base_voice_streams, new_voice_streams):
         for voice_id in VOICE_IDS
     }
 
-# Keep only the issues introduced by the candidate beyond existing history.
+# Keep only the issues introduced by the candidate beyond existing history
 def subtract_issue_maps(base_issue_map, combined_issue_map):
     issue_delta = {voice_id: [] for voice_id in VOICE_IDS}
     for voice_id in issue_delta:
@@ -416,7 +416,7 @@ def subtract_issue_maps(base_issue_map, combined_issue_map):
         ]
     return issue_delta
 
-# Evaluate a candidate in full fugue context and return only its new issues.
+# Evaluate a candidate and return only its new issues
 def evaluate_candidate_voice_streams(voice_streams, check_weak_dissonances=True):
     history_streams = copy_voice_streams(global_state.get('committed_history_streams', make_empty_voice_streams()))
     base_issues = analyze_voice_streams(
@@ -432,7 +432,7 @@ def evaluate_candidate_voice_streams(voice_streams, check_weak_dissonances=True)
     )
     return subtract_issue_maps(base_issues, combined_issues), combined_streams
 
-# Penalize awkward handoffs between committed history and a new candidate.
+# Penalize awkward handoffs between committed history and a new candidate
 def score_boundary_continuity(history_streams, voice_streams, state_name):
     score = 0.0
     subject_voice = blueprint.last_subject_voice if state_name == 'MIDDLE_ENTRY' else None
@@ -465,7 +465,7 @@ def score_boundary_continuity(history_streams, voice_streams, state_name):
 
     return score
 
-# Find the most recent pitch available for a voice across history and motives.
+# Find the most recent pitch available for a voice across history and motives
 def get_previous_voice_pitch(voice_id):
     history_streams = global_state.get('committed_history_streams', {})
     pitch = get_last_pitch(history_streams.get(voice_id))
@@ -482,7 +482,7 @@ def get_previous_voice_pitch(voice_id):
 
     return -1
 
-# Expand a stream into a per-16th pitch grid for local registral checks.
+# Expand a stream into a 16th-note pitch grid
 def stream_to_pitch_grid(m21_stream, total_16ths):
     grid = [-1] * total_16ths
     if not m21_stream:
@@ -499,7 +499,7 @@ def stream_to_pitch_grid(m21_stream, total_16ths):
 
     return grid
 
-# Fit a stream into a voice's register while minimizing awkward displacement.
+# Fit a stream into a voice's register by transposing up/down an octave
 def fit_stream_to_voice_range(m21_stream, voice_id, reference_pitch=None):
     pitches = get_pitch_list(m21_stream)
     if not pitches:
@@ -534,7 +534,7 @@ def fit_stream_to_voice_range(m21_stream, voice_id, reference_pitch=None):
 
     return clone_stream(m21_stream)
 
-# Penalize simultaneous crossings between an upper and lower stream.
+# Penalize simultaneous crossings between an upper and lower stream
 def stream_crossing_penalty(upper_stream, lower_stream):
     total_16ths = max(
         get_stream_length_16ths(upper_stream),
@@ -553,7 +553,7 @@ def stream_crossing_penalty(upper_stream, lower_stream):
             penalty += 200 + ((lower_pitch - upper_pitch) * 12)
     return penalty
 
-# Refit one stream relative to a neighbor so their registral order is preserved.
+# Refit one stream relative to a neighbor so their registral order is preserved
 def fit_stream_relative_to_neighbor(m21_stream, voice_id, neighbor_stream, should_be_above, reference_pitch=None):
     pitches = get_pitch_list(m21_stream)
     if not pitches:
@@ -589,7 +589,7 @@ def fit_stream_relative_to_neighbor(m21_stream, voice_id, neighbor_stream, shoul
 
     return fit_stream_to_voice_range(m21_stream, voice_id, reference_pitch=reference_pitch)
 
-# Adjust fixed voice streams to reduce built-in crossings before solving or scoring.
+# Adjust fixed voice streams to reduce built-in crossings
 def stabilize_voice_stream_order(voice_streams, protected_voice_ids=None):
     protected_voice_ids = set(protected_voice_ids or [])
     stabilized = copy_voice_streams(voice_streams)
@@ -632,7 +632,7 @@ def stabilize_voice_stream_order(voice_streams, protected_voice_ids=None):
 
     return stabilized
 
-# Build a compact pitch-and-duration signature for one stream.
+# Build a pitch and duration tuple for one stream
 def stream_signature(m21_stream):
     return tuple(
         (
@@ -642,13 +642,13 @@ def stream_signature(m21_stream):
         for n in m21_stream.flatten().notesAndRests
     )
 
-# Check whether an interval is consonant for a specific voice pair.
+# Check whether an interval is consonant for a specific voice pair
 def is_consonant_for_pair(voice_a, voice_b, interval):
     if 2 in (voice_a, voice_b):
         return interval in BASS_CONSONANCES
     return interval in UPPER_VOICE_CONSONANCES
 
-# Copy the opening portion of a stream measured in 16th-note units.
+# Copy the opening portion of a stream
 def take_stream_prefix(m21_stream, prefix_16ths):
     prefix = stream.Stream()
     copied = 0
@@ -660,11 +660,11 @@ def take_stream_prefix(m21_stream, prefix_16ths):
         copied += dur_16ths
     return prefix
 
-# Measure the shared section span of a rendered three-voice bundle.
+# Measure the shared section span of a rendered three-voice bundle
 def get_voice_streams_length_16ths(voice_streams):
     return max((get_stream_length_16ths(m21_stream) for m21_stream in voice_streams.values()), default=0)
 
-# Slice a monophonic stream by 16th-note offsets, splitting notes at boundaries.
+# Slice a monophonic stream by 16th-note offsets
 def slice_stream_16ths(m21_stream, start_16ths, length_16ths):
     sliced = stream.Stream()
     if not m21_stream or length_16ths <= 0:
@@ -690,14 +690,14 @@ def slice_stream_16ths(m21_stream, start_16ths, length_16ths):
 
     return sliced
 
-# Slice all three voices over the same 16th-note span.
+# Slice all three voices over the same 16th-note span
 def slice_voice_streams(voice_streams, start_16ths, length_16ths):
     return {
         voice_id: slice_stream_16ths(voice_streams.get(voice_id, stream.Stream()), start_16ths, length_16ths)
         for voice_id in VOICE_IDS
     }
 
-# Tie repeated weak-beat reattacks when they introduce a dissonant crunch.
+# Tie repeated weak-beat reattacks when they introduce a dissonance
 def smooth_repeated_weak_dissonances(voice_streams, active_voice_id):
     active_stream = voice_streams.get(active_voice_id)
     if not active_stream:
@@ -764,7 +764,7 @@ def smooth_repeated_weak_dissonances(voice_streams, active_voice_id):
             new_stream.append(note.Note(event["pitch"], quarterLength=event["quarter_length"]))
     return new_stream
 
-# Recover the stored generated line from the rendered voice bundle.
+# Recover the stored generated line from the voice bundle
 def rendered_generated_stream(generated_stream, voice_streams, active_voice_id, state_name):
     active_stream = voice_streams.get(active_voice_id)
     if not active_stream:
@@ -773,7 +773,7 @@ def rendered_generated_stream(generated_stream, voice_streams, active_voice_id, 
         return take_stream_prefix(active_stream, get_stream_length_16ths(generated_stream))
     return clone_stream(active_stream)
 
-# Score a generated line with melodic, registral, and issue-based penalties.
+# Heuristic score for a generated line with melodic, registral, and issue-based penalties
 def score_generated_solution(generated_stream, voice_streams, active_voice_id, prev_pitch, state_name, issue_map=None):
     pitches = get_pitch_list(generated_stream)
     if not pitches:
@@ -891,7 +891,7 @@ def score_generated_solution(generated_stream, voice_streams, active_voice_id, p
 
     return score
 
-# Convert a note-event payload into a music21 stream.
+# Convert a note-event payload into a music21 stream
 def convert_note_events_to_stream(note_events, use_offsets=False):
     result = stream.Stream()
     current_offset_ticks = 0
@@ -923,11 +923,11 @@ def convert_note_events_to_stream(note_events, use_offsets=False):
 
     return result
 
-# Convert the plugin's JSON note payload into a music21 stream.
+# Convert the plugin's JSON payload into a music21 stream
 def convert_json_to_stream(json_payload):
     return convert_note_events_to_stream(json_payload.get('subject', []), use_offsets=True)
 
-# Build a tonal answer by transposing the subject with standard adjustment.
+# Build a tonal answer by transposing the subject and adjusting the cadence
 def create_tonal_answer(m21_stream):
     new_stream = stream.Stream()
     adjustment_active = True
@@ -944,7 +944,7 @@ def create_tonal_answer(m21_stream):
             new_stream.append(note.Note(new_p, quarterLength=n.quarterLength))
     return new_stream
 
-# Move a stream through a diatonic sequence by a given number of steps.
+# Build an episode by moving a stream through a diatonic sequence
 def diatonic_sequence(m21_stream, steps_down):
     if not m21_stream: return stream.Stream()
     scale_ladder = get_scale_pitch_ladder()
@@ -962,11 +962,11 @@ def diatonic_sequence(m21_stream, steps_down):
             new_stream.append(note.Note(new_p, quarterLength=n.quarterLength))
     return new_stream
 
-# Return fresh copies of the supported episode-plan templates.
+# Return fresh copies of the supported episode templates
 def get_episode_plan_templates():
     return [copy.deepcopy(plan) for plan in EPISODE_PLAN_TEMPLATES]
 
-# Convert an episode plan and step index into a diatonic shift amount.
+# Convert an episode template and step index into a diatonic shift amount
 def get_episode_step_shift(episode_plan, step_index, part_kind='generated'):
     if not episode_plan or step_index <= 0:
         return 0
@@ -979,7 +979,7 @@ def get_episode_step_shift(episode_plan, step_index, part_kind='generated'):
         shift *= -1
     return shift
 
-# Apply one sequential episode transformation step to a generated stream.
+# Apply one sequential episode transformation step to a generated stream
 def apply_episode_step(m21_stream, episode_plan, voice_id, step_index, part_kind='generated'):
     transformed = clone_stream(m21_stream)
     shift = get_episode_step_shift(episode_plan, step_index, part_kind=part_kind)
@@ -988,7 +988,7 @@ def apply_episode_step(m21_stream, episode_plan, voice_id, step_index, part_kind
         transformed = fit_stream_to_voice_range(transformed, voice_id)
     return transformed
 
-# Extract a short subject-head prefix for false-entry episode plans.
+# Extract a short subject prefix for middle-entry episode plans
 def extract_subject_head_prefix():
     subject_stream = blueprint.motives.get('subject')
     if not subject_stream:
@@ -1029,7 +1029,7 @@ def extract_subject_head_prefix():
 
     return prefix
 
-# Build the locked prefix used when solving a false-entry episode.
+# Build the locked prefix used when solving a middle-entry episode.
 def build_episode_locked_prefix(episode_plan, voice_id):
     if not episode_plan or episode_plan.get("kind") != "false_entry":
         return None
@@ -1046,7 +1046,7 @@ def build_episode_locked_prefix(episode_plan, voice_id):
         reference_pitch=get_previous_voice_pitch(voice_id),
     )
 
-# Gather recent voice pitches used to rank episode-plan direction and range.
+# Gather recent voice pitches used to rank episode direction and range
 def get_episode_context_pitches(instructions, target_voice_id):
     pitches = []
     for voice_id, role in instructions.items():
@@ -1065,7 +1065,7 @@ def get_episode_context_pitches(instructions, target_voice_id):
 
     return pitches, target_pitch
 
-# Score one episode plan against the current registral context.
+# Heuristic score for one episode
 def score_episode_plan_context(episode_plan, instructions, target_voice_id):
     context_pitches, target_pitch = get_episode_context_pitches(instructions, target_voice_id)
     average_pitch = sum(context_pitches) / float(len(context_pitches))
@@ -1128,7 +1128,7 @@ def score_episode_plan_context(episode_plan, instructions, target_voice_id):
 
     return score
 
-# Rank supported episode plans from most to least suitable right now.
+# Rank supported episodes
 def rank_episode_plans(instructions, target_voice_id):
     ranked = []
     for plan in get_episode_plan_templates():
@@ -1136,14 +1136,14 @@ def rank_episode_plans(instructions, target_voice_id):
     ranked.sort(key=lambda item: item[0])
     return [copy.deepcopy(plan) for _, plan in ranked]
 
-# Find which voice is assigned the currently generated role.
+# Get the voice currently assigned to the generated role
 def get_target_voice_id(instructions, target_gen_role):
     return next(
         (voice_id for voice_id, role in instructions.items() if role == target_gen_role),
         None,
     )
 
-# Score a fallback seed after rendering it into full voice streams.
+# Score for a fallback seed after rendering full voice streams
 def score_seed_candidate(seed_stream, instructions, target_gen_role, state_name, target_voice_id, prev_pitch, episode_plan=None):
     voice_streams = assemble_voice_streams(
         instructions,
@@ -1173,7 +1173,7 @@ def score_seed_candidate(seed_stream, instructions, target_gen_role, state_name,
 
     return score, voice_streams, issues
 
-# Build a non-solver episode candidate when direct solving runs out of options.
+# Build a non-solver fallback episode candidate when the solver exhausts options
 def build_episode_fallback(instructions, target_gen_role, state_name, episode_plan=None):
     target_voice_id = get_target_voice_id(instructions, target_gen_role)
     if target_voice_id is None:
@@ -1239,7 +1239,7 @@ def build_episode_fallback(instructions, target_gen_role, state_name, episode_pl
 
     return seed_stream, voice_streams, []
 
-# Build a non-solver middle-entry candidate when direct solving fails.
+# Build a non-solver fallback middle-entry when the solver exhausts options
 def build_middle_entry_fallback(instructions, target_gen_role, state_name):
     target_voice_id = get_target_voice_id(instructions, target_gen_role)
     if target_voice_id is None:
@@ -1290,7 +1290,7 @@ def build_middle_entry_fallback(instructions, target_gen_role, state_name):
 
     return seed_stream, voice_streams, []
 
-# Resolve a role name into a concrete stream for a specific voice and step.
+# Resolve a role name to a stream for a specific voice and step
 def resolve_role_stream(role, voice_id, state_name, sequence_step=0, episode_plan=None):
     base_stream = blueprint.motives.get(role)
     if not base_stream:
@@ -1313,7 +1313,7 @@ def resolve_role_stream(role, voice_id, state_name, sequence_step=0, episode_pla
 
     return resolved_stream
 
-# Render one generated line plus fixed roles into full voice streams.
+# Render one generated line and fixed roles into full voice streams
 def assemble_voice_streams(instructions, target_gen_role, generated_stream, state_name, episode_plan=None):
     step_count = 3 if state_name == 'EPISODE' else 1
     if state_name == 'EPISODE' and episode_plan:
@@ -1363,7 +1363,7 @@ def assemble_voice_streams(instructions, target_gen_role, generated_stream, stat
         for voice_id, parts in voice_parts.items()
     }
 
-# Convert a music21 stream into the JSON payload expected by the plugin bridge.
+# Convert a music21 stream into a JSON payload
 def stream_to_payload(m21_stream):
     notes = []
     for n in m21_stream.flatten().notesAndRests:
@@ -1372,7 +1372,7 @@ def stream_to_payload(m21_stream):
         notes.append({"pitch": pitch, "ticks": ticks})
     return notes
 
-# Prepare solver inputs and anchors for the next generation attempt.
+# Prepare solver inputs for the next generation attempt
 def prepare_generation_context(instructions, target_gen_role, state_name):
     existing_voice_streams = {}
     existing_voice_ids = []
@@ -1403,7 +1403,7 @@ def prepare_generation_context(instructions, target_gen_role, state_name):
 
     return existing_streams, existing_voice_ids, prev_ext_pitches, active_voice_id, prev_gen_pitch
 
-# Construct and configure a FugueSolver for one generation attempt.
+# Construct and configure a FugueSolver for one generation attempt
 def build_solver_for_attempt(existing_streams, existing_voice_ids, active_voice_id, prev_gen_pitch, prev_ext_pitches, state_name, episode_plan=None):
     locked_prefix = None
     note_budget = get_note_budget(state_name)
@@ -1433,7 +1433,7 @@ def build_solver_for_attempt(existing_streams, existing_voice_ids, active_voice_
     solver.setup_rules()
     return solver
 
-# Keep the best-scoring candidates while removing duplicate textures.
+# Keep the best scoring candidates while removing duplicate textures
 def ordered_unique_candidates(candidates, desired_count):
     ordered = []
     ordered_signatures = set()
@@ -1447,7 +1447,7 @@ def ordered_unique_candidates(candidates, desired_count):
             break
     return ordered
 
-# Wrap a fallback stream into the same candidate format as solver outputs.
+# Wrap a fallback stream into the same format as solver outputs
 def build_candidate_from_fallback(fallback_stream, fallback_voices, active_voice_id, prev_pitch, state_name, episode_plan=None, plan_penalty=0.0):
     fallback_stream = rendered_generated_stream(
         fallback_stream,
@@ -1469,7 +1469,7 @@ def build_candidate_from_fallback(fallback_stream, fallback_voices, active_voice
         episode_plan=episode_plan,
     )
 
-# Collect valid solver outputs for one state, including fallback recovery.
+# Collect valid solver outputs for one state
 def collect_valid_solutions(fs, instructions, target_gen_role, state_name, active_voice_id, prev_pitch, used_signatures=None, max_attempts=None, desired_count=1, episode_plan=None, plan_penalty=0.0, check_weak_dissonances=True, score_strict_issues=False):
     last_issues = {}
     if max_attempts is not None:
@@ -1573,7 +1573,7 @@ def collect_valid_solutions(fs, instructions, target_gen_role, state_name, activ
 
     return [], summarize_issues(last_issues)
 
-# Collect and rank candidates for the current state across its plan options.
+# Collect and rank candidates for the current state
 def collect_state_candidates(instructions, target_gen_role, state_name, active_voice_id, prev_pitch, existing_streams, existing_voice_ids, prev_ext_pitches, used_signatures=None, desired_count=1):
     used_signatures = used_signatures or set()
     allow_relaxed_weak_checks = subject_has_mixed_rhythm()
@@ -1626,7 +1626,7 @@ def collect_state_candidates(instructions, target_gen_role, state_name, active_v
     ranked_plans = rank_episode_plans(instructions, active_voice_id)
     primary_plan_count = min(4, len(ranked_plans))
 
-    # Extend the candidate pool with solver results from one episode plan.
+    # Extend the candidate pool with solver results from one episode
     def extend_with_plan(plan, plan_index, per_plan_goal, allow_relaxed_pass=False):
         nonlocal all_candidates, last_issues, seen_signatures
         solver = build_solver_for_attempt(
@@ -1698,7 +1698,7 @@ def collect_state_candidates(instructions, target_gen_role, state_name, active_v
 
     return [], last_issues
 
-# Build the JSON response returned to the MuseScore plugin after generation.
+# Build the JSON data returned to the plugin after generation
 def build_solution_response(voice_streams):
     multiplier = 3 if blueprint.state == 'EPISODE' else 1
     measure_voices = {
@@ -1717,7 +1717,7 @@ def build_solution_response(voice_streams):
         "solution": solution,
     })
 
-# Store newly committed material back into the blueprint's motive cache.
+# Store newly committed material in the blueprint cache
 def update_generated_motive(state_name, generated_stream, source_voice_id):
     if state_name == 'EXPO_2':
         blueprint.motives['cs1'] = generated_stream
@@ -1736,7 +1736,7 @@ def update_generated_motive(state_name, generated_stream, source_voice_id):
             blueprint.motives['episode_line'] = generated_stream
             blueprint.motive_sources['episode_line'] = source_voice_id
 
-# Build one committed section entry for history syncing and restore.
+# Build one committed section entry for history syncing
 def make_section_history_entry(state_name, generated_stream, voice_streams, source_voice_id, target_role):
     return {
         "state_name": state_name,
@@ -1748,13 +1748,13 @@ def make_section_history_entry(state_name, generated_stream, voice_streams, sour
         "voice_streams": copy_voice_streams(voice_streams),
     }
 
-# Record one committed section so edited score history can be re-imported later.
+# Record one committed section so edited score history can be restored later
 def append_section_history_entry(state_name, generated_stream, voice_streams, source_voice_id, target_role):
     global_state.setdefault('section_history', []).append(
         make_section_history_entry(state_name, generated_stream, voice_streams, source_voice_id, target_role)
     )
 
-# Rebuild the stored motive cache from the committed section history.
+# Rebuild the stored cache from committed section history
 def rebuild_motives_from_section_history():
     section_history = global_state.get('section_history', [])
     blueprint.motives['cs1'] = None
@@ -1773,14 +1773,14 @@ def rebuild_motives_from_section_history():
             entry['source_voice_id'],
         )
 
-# Render a committed section-history list back into continuous three-voice streams.
+# Render a committed section-history list as continuous three-voice streams
 def render_section_history_streams(section_history):
     rendered = make_empty_voice_streams()
     for entry in section_history:
         rendered = extend_voice_streams(rendered, entry['voice_streams'])
     return rendered
 
-# Build a stable comparison key for one structured evaluator issue.
+# Build a stable comparison key for one structured evaluation issue
 def issue_event_key(issue_event):
     return (
         issue_event.get('id', ''),
@@ -1788,7 +1788,7 @@ def issue_event_key(issue_event):
         tuple(issue_event.get('voices', [])),
     )
 
-# Import the current score history, validate edits, and refresh cached motives.
+# Import the current score history, validate edits, and refresh the cache
 def sync_committed_history_from_payload(history_payload, pending_section_entry=None, skip_issue_validation=False):
     section_history = copy_section_history(global_state.get('section_history', []))
     if pending_section_entry is not None:
@@ -1870,7 +1870,7 @@ def sync_committed_history_from_payload(history_payload, pending_section_entry=N
     rebuild_motives_from_section_history()
     return []
 
-# Commit one cached candidate into the fugue history and motive store.
+# Commit one cached candidate into the section history
 def commit_candidate_at_index(selected_idx):
     if len(global_state.get('generated_streams', [])) <= selected_idx:
         return
@@ -1894,7 +1894,7 @@ def commit_candidate_at_index(selected_idx):
         global_state.get('target_gen_role', GEN_ROLE_BY_STATE.get(blueprint.state, 'free_melody')),
     )
 
-# Build the section-history metadata for the currently displayed candidate.
+# Build the section-history metadata for the currently displayed candidate
 def build_pending_section_entry(selected_idx):
     if len(global_state.get('generated_streams', [])) <= selected_idx:
         return None
@@ -1908,7 +1908,7 @@ def build_pending_section_entry(selected_idx):
         global_state.get('target_gen_role', GEN_ROLE_BY_STATE.get(blueprint.state, 'free_melody')),
     )
 
-# Initialize subject, answer, and committed history from the first user input.
+# Initialize subject, answer, and committed history from the first user input
 def initialize_subject(decision, data, meter_payload, key_payload):
     blueprint.motives['subject'] = convert_json_to_stream(data)
     blueprint.motive_sources['subject'] = 1
@@ -1945,21 +1945,21 @@ def initialize_subject(decision, data, meter_payload, key_payload):
         'subject',
     )
 
-# Cache the current generation instructions and pitch anchor for reuse.
+# Cache the current generation instructions and pitch anchor
 def store_generation_context(instructions, target_gen_role, active_voice_id, prev_gen_pitch):
     global_state['instructions'] = instructions
     global_state['target_gen_role'] = target_gen_role
     global_state['active_voice_id'] = active_voice_id
     global_state['anchor_pitch'] = prev_gen_pitch
 
-# Replace or extend the cached candidate pool for Next/Prev navigation.
+# Replace or extend the cached candidate pool
 def set_candidate_pool(candidates, action):
     if action == 'new':
         global_state['generated_streams'] = copy_candidate_entries(candidates)
     else:
         global_state['generated_streams'].extend(copy_candidate_entries(candidates))
 
-# Remove candidates whose voice layouts already exist in the cache.
+# Remove candidates whose voice layouts already exist in the cache
 def unique_new_candidates(candidate_solutions):
     existing_signatures = {
         candidate_signature(candidate)
@@ -1975,7 +1975,7 @@ def unique_new_candidates(candidate_solutions):
     return new_candidates
 
 # --- ENDPOINTS ---
-# Generate the next fugue section or an alternative for the current section.
+# Generate the next fugue section, or an alternative for the current section
 @app.route('/generate', methods=['POST'])
 def generate_measure():
     global blueprint
@@ -2105,7 +2105,7 @@ def generate_measure():
 
     return build_solution_response(voice_streams)
 
-# Evaluate a highlighted fugue excerpt and return structured issues.
+# Evaluate a highlighted fugue or excerpt, return structured issues
 @app.route('/evaluate', methods=['POST'])
 def evaluate_fugue():
     data = request.json

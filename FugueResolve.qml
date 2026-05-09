@@ -214,7 +214,6 @@ MuseScore {
         }
     }
 
-    // Request the next generated section from the Python server.
     function requestGeneration(subjectData, decision, meterInfo, keyInfo, historyExcerpt, historyValidated, oldPasteTick) {
         Bridge.nextMeasure(subjectData, decision, "new", currentSolutionIndex, meterInfo, keyInfo, historyExcerpt, historyValidated, function(solution, nextState, durationMultiplier, errorMsg) {
             if (!solution) {
@@ -234,7 +233,6 @@ MuseScore {
         });
     }
 
-    // Format a short multi-line generation error block for the plugin textbox.
     function formatGenerationError(title, details) {
         if (!details || details.length === 0) {
             return title;
@@ -247,14 +245,12 @@ MuseScore {
         return lines.join("\n");
     }
 
-    // Restore UI state after a failed generation attempt.
     function failGeneration(message, oldPasteTick) {
         targetPasteTick = oldPasteTick;
         evaluationFeedback = message;
         btnState = "ready";
     }
 
-    // Validate the edited current section with the same evaluator flow before continuing generation.
     function validateEditedHistoryAndGenerate(decision, subjectData, meterInfo, keyInfo, historyExcerpt, oldPasteTick) {
         var sectionStartTick = lastCommittedTick >= 0 ? lastCommittedTick : compositionStartTick;
         var historyRange = {
@@ -289,7 +285,6 @@ MuseScore {
         });
     }
 
-    // Trigger generation for the current fugue section and paste the best result.
     function triggerGeneration(decision) {
         if (btnState === "solving") return; 
         resetEvaluationMode(undefined, undefined, currentSection !== "INITIAL");
@@ -351,7 +346,6 @@ MuseScore {
         requestGeneration(subjectData, decision, meterInfo, keyInfo, historyExcerpt, false, oldPasteTick);
     }
 
-    // Paste the currently selected generated solution into the score.
     function pasteCurrentSolution() {
         if (generatedSolutions.length > 0) {
             var selectedSolution = generatedSolutions[currentSolutionIndex];
@@ -366,7 +360,6 @@ MuseScore {
         }
     }
 
-    // Restore the most recently committed generated section after a failed edit.
     function restoreLastCommittedSection() {
         if (!lastCommittedSolution || lastCommittedTick < 0) {
             return;
@@ -383,7 +376,6 @@ MuseScore {
         evaluationFeedback = "Restored the last generated section.";
     }
 
-    // Describe the currently selected evaluation issue.
     function showCurrentIssue() {
         if (evaluationIssues.length === 0) {
             resetEvaluationMode("Perfect! No counterpoint errors detected.", evaluationRange);
@@ -397,7 +389,6 @@ MuseScore {
             issue.summary;
     }
 
-    // Enter evaluation mode with a fresh issue list and selected range.
     function enterEvaluationMode(issues, range) {
         interactionMode = "evaluate";
         evaluationIssues = issues || [];
@@ -406,7 +397,6 @@ MuseScore {
         showCurrentIssue();
     }
 
-    // Exit evaluation mode and optionally show a status message.
     function resetEvaluationMode(message, range) {
         interactionMode = "generate";
         evaluationIssues = [];
