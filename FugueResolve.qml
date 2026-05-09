@@ -18,7 +18,7 @@ MuseScore {
     property int currentSolutionIndex: 0
     property int subjectDurationTicks: 0
     property string btnState: "ready"
-    property string evaluationFeedback: "Highlight a measure and click Evaluate"
+    property string evaluationFeedback: ""
     property string currentSection: "INITIAL"
     property int currentDurationMultiplier: 1
     property string interactionMode: "generate"
@@ -116,7 +116,7 @@ MuseScore {
                     if (generatedSolutions.length === 0) return;
                     if (currentSolutionIndex >= generatedSolutions.length - 1) {
                         nextSolBtn.text = "..."
-                        Bridge.nextMeasure([], "auto", "next", currentSolutionIndex, null, null, null, false, function(solution, nextState, durationMultiplier, errorMsg) {
+                        Bridge.nextMeasure([], "auto", "next", currentSolutionIndex, null, null, null, false, function(solution, _nextState, _durationMultiplier, errorMsg) {
                             if (solution) {
                                 var temp = generatedSolutions.slice();
                                 temp.push(solution);
@@ -218,9 +218,10 @@ MuseScore {
     function requestGeneration(subjectData, decision, meterInfo, keyInfo, historyExcerpt, historyValidated, oldPasteTick) {
         Bridge.nextMeasure(subjectData, decision, "new", currentSolutionIndex, meterInfo, keyInfo, historyExcerpt, historyValidated, function(solution, nextState, durationMultiplier, errorMsg) {
             if (!solution) {
-                targetPasteTick = oldPasteTick;
-                evaluationFeedback = errorMsg ? "Error: " + errorMsg : "Error: Generation failed.";
-                btnState = "ready";
+                failGeneration(
+                    errorMsg ? "Error: " + errorMsg : "Error: Generation failed.",
+                    oldPasteTick
+                );
                 return; 
             }
             generatedSolutions = [solution]; 
@@ -246,6 +247,13 @@ MuseScore {
         return lines.join("\n");
     }
 
+    // Restore UI state after a failed generation attempt.
+    function failGeneration(message, oldPasteTick) {
+        targetPasteTick = oldPasteTick;
+        evaluationFeedback = message;
+        btnState = "ready";
+    }
+
     // Validate the edited current section with the same evaluator flow before continuing generation.
     function validateEditedHistoryAndGenerate(decision, subjectData, meterInfo, keyInfo, historyExcerpt, oldPasteTick) {
         var sectionStartTick = lastCommittedTick >= 0 ? lastCommittedTick : compositionStartTick;
@@ -256,25 +264,24 @@ MuseScore {
             "endStaff": curScore.nstaves - 1
         };
 
-        Bridge.evaluateFugue(curScore, historyRange, function(issues, mistakes, errorMsg) {
+        Bridge.evaluateFugue(curScore, historyRange, function(issues, _mistakes, errorMsg) {
             if (errorMsg) {
-                targetPasteTick = oldPasteTick;
-                evaluationFeedback = errorMsg;
-                btnState = "ready";
+                failGeneration(errorMsg, oldPasteTick);
                 return;
             }
 
             if (issues && issues.length > 0) {
-                targetPasteTick = oldPasteTick;
                 var lines = [];
                 for (var i = 0; i < issues.length && i < 3; i++) {
                     lines.push(issues[i].location + ": " + issues[i].summary);
                 }
-                evaluationFeedback = formatGenerationError(
-                    "Edited fugue introduces counterpoint issues. Use Evaluate or Restore Last Section before continuing:",
-                    lines
+                failGeneration(
+                    formatGenerationError(
+                        "Edited fugue introduces counterpoint issues. Use Evaluate or Restore Last Section before continuing:",
+                        lines
+                    ),
+                    oldPasteTick
                 );
-                btnState = "ready";
                 return;
             }
 
@@ -400,7 +407,7 @@ MuseScore {
     }
 
     // Exit evaluation mode and optionally show a status message.
-    function resetEvaluationMode(message, range, clearSelection) {
+    function resetEvaluationMode(message, range) {
         interactionMode = "generate";
         evaluationIssues = [];
         currentIssueIndex = 0;
